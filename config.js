@@ -11,8 +11,8 @@ function toggleTheme(){
   const i = document.getElementById("themeIcon"); if(i) i.textContent = next === "dark" ? "☀" : "🌙";
 }
 
-const SUPABASE_URL = "https://qprwcojzsmkybpbzmmwt.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFwcndjb2p6c21reWJwYnptbXd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4ODQxMDQsImV4cCI6MjEwMDQ2MDEwNH0.dBou__5fP8okwCDirrAr2eLE3vb1ntnwpUGQH1qIBKY";
+const SUPABASE_URL = "https://qodcqczukvireuelkoko.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvZGNxY3p1a3ZpcmV1ZWxrb2tvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MzQwMTIsImV4cCI6MjEwMjExMDAxMn0.er4KHeu4XhsfymQ2PzqIGyg71N9IqIPIBG0iabZdEWE";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 function fmtDate(d){ if(!d) return ""; try{ return new Date(d).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});}catch{return d;} }
