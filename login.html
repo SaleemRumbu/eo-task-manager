@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ED1 Task Manager — Sign in</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div class="auth-wrap">
+  <button class="theme-fab" onclick="toggleTheme()" title="Light / dark"><span id="themeIcon">🌙</span></button>
+  <div class="auth-card">
+    <h1 class="auth-title">ED1 TASK MANAGER</h1>
+    <p class="auth-sub">Rumbu Industries Group &bull; Sign in</p>
+
+    <label>Email address</label>
+    <input type="email" id="email" autocomplete="username" placeholder="your@email.com"
+      onkeydown="if(event.key==='Enter'){document.getElementById('password').focus();}">
+
+    <label>Password</label>
+    <input type="password" id="password" autocomplete="current-password" placeholder="••••••••"
+      onkeydown="if(event.key==='Enter'){login();}">
+
+    <button class="btn btn-primary btn-block" id="loginBtn" style="margin-top:20px" onclick="login()">Sign in</button>
+    <div class="status" id="status"></div>
+    <p class="auth-sub" style="margin-top:20px">Accounts are created by the administrator. Contact the ED1 office for access.</p>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script>(function(){var i=document.getElementById("themeIcon"); if(i) i.textContent=currentTheme()==="dark"?"☀":"🌙";})();</script>
+<script>
+async function login(){
+  const email = document.getElementById("email").value.trim().toLowerCase();
+  const password = document.getElementById("password").value;
+  const status = document.getElementById("status");
+  const btn = document.getElementById("loginBtn");
+  if(!email || !password){ status.className="status err"; status.textContent="Enter your email and password."; return; }
+
+  btn.disabled = true; btn.textContent = "Signing in...";
+  status.className = "status"; status.textContent = "";
+  try{
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if(error){ status.className="status err"; status.textContent="Invalid email or password."; btn.disabled=false; btn.textContent="Sign in"; return; }
+
+    const { data: p } = await sb.from("profiles").select("role, must_change_password").eq("id", data.user.id).single();
+    status.className="status ok"; status.textContent="Signed in. Loading...";
+    if(p && p.must_change_password){ window.location.href = "change-password.html"; return; }
+    window.location.href = (p && p.role === "superadmin")
+      ? "modules/superadmin/dashboard.html"
+      : "modules/admin/dashboard.html";
+  }catch(e){
+    status.className="status err"; status.textContent="Error: " + (e.message || e);
+    btn.disabled=false; btn.textContent="Sign in";
+  }
+}
+// If already signed in, skip the login form.
+(async () => {
+  const { data:{ session } } = await sb.auth.getSession();
+  if(session){
+    const { data:p } = await sb.from("profiles").select("role, must_change_password").eq("id", session.user.id).single();
+    if(p && p.must_change_password){ window.location.href="change-password.html"; return; }
+    if(p){ window.location.href = p.role==="superadmin" ? "modules/superadmin/dashboard.html" : "modules/admin/dashboard.html"; }
+  }
+})();
+</script>
+</body>
+</html>

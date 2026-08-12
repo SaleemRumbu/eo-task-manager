@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admins — ED1 Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<div class="modal-back" id="adminModal">
+  <div class="modal">
+    <h3>New admin</h3>
+    <label>Full name</label><input id="a_name">
+    <label>Email</label><input id="a_email" type="email">
+    <label>Phone number</label><input id="a_phone" type="tel" placeholder="e.g. 0803 000 0000">
+    <label>Temporary password</label>
+    <div class="row-gap" style="align-items:center"><input id="a_pw" style="flex:1"><button class="btn btn-sm" onclick="genPw()">Generate</button></div>
+    <p class="faint" style="font-size:12px;margin:8px 0 0">Assign the admin to units afterwards on the Units page. They set their own password on first login.</p>
+    <div class="status" id="a_status"></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal('adminModal')">Cancel</button><button class="btn btn-primary" id="a_save" onclick="createAdmin()">Create admin</button></div>
+  </div>
+</div>
+
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+let ME=null, UNAME={}, PAGE=0; const SIZE=20; let NAMES={};
+
+(async () => {
+  ME = await requireAuth({ role:"superadmin" });
+  if(!ME) return;
+  renderShell(ME, { active:"Admins", title:"Admins", note:"Manage admin accounts" });
+  const { data: units } = await sb.from("units").select("id, name");
+  UNAME={}; (units||[]).forEach(u=>UNAME[u.id]=u.name);
+
+  document.getElementById("content").innerHTML=`
+    <div class="page-head"><h2 style="margin:0;font-size:18px">All admins</h2>
+      <button class="btn btn-primary" onclick="openAdmin()">+ New admin</button></div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="searchbar"><input id="f_search" placeholder="Search name or email…" onkeydown="if(event.key==='Enter')resetLoad()">
+        <button class="btn btn-sm" onclick="resetLoad()">Search</button>
+        <button class="btn btn-sm btn-ghost" onclick="clearS()">Clear</button></div>
+    </div>
+    <div class="table-wrap" id="tbl"></div>
+    <div class="pager" id="pager"></div>`;
+  loadAdmins();
+})();
+
+function openModal(id){ document.getElementById(id).classList.add("open"); }
+function closeModal(id){ document.getElementById(id).classList.remove("open"); }
+function val(id){ return document.getElementById(id).value; }
+function genPw(){ document.getElementById("a_pw").value="Ed1-"+Math.random().toString(36).slice(2,8)+Math.floor(Math.random()*90+10); }
+function resetLoad(){ PAGE=0; loadAdmins(); }
+function onPage(p){ PAGE=p; loadAdmins(); }
+function clearS(){ document.getElementById("f_search").value=""; resetLoad(); }
+const TRASH='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
+
+async function loadAdmins(){
+  const tbl=document.getElementById("tbl"); tbl.innerHTML=`<div class="empty">Loading…</div>`;
+  let q=sb.from("profiles").select("id, full_name, email, phone, must_change_password",{count:"exact"}).eq("role","admin");
+  const s=val("f_search").trim(); if(s) q=q.or(`full_name.ilike.%${s}%,email.ilike.%${s}%`);
+  const { data: admins, count, error }=await q.order("full_name",{ascending:true}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
+  if(error){ tbl.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; return; }
+
+  NAMES={}; (admins||[]).forEach(a=>NAMES[a.id]=a.full_name);
+  const ids=(admins||[]).map(a=>a.id);
+  let linksByAdmin={};
+  if(ids.length){ const { data: links }=await sb.from("profile_units").select("profile_id, unit_id").in("profile_id",ids);
+    (links||[]).forEach(l=>{ (linksByAdmin[l.profile_id]=linksByAdmin[l.profile_id]||[]).push(l.unit_id); }); }
+
+  const rows=(admins||[]).map(a=>{
+    const chips=(linksByAdmin[a.id]||[]).map(id=>`<span class="badge badge-in_progress badge-flat" style="margin:2px">${escapeHtml(UNAME[id]||"—")}</span>`).join("") || '<span class="faint">No units</span>';
+    return `<tr>
+      <td><strong>${escapeHtml(a.full_name)}</strong></td>
+      <td class="muted">${escapeHtml(a.email)}</td>
+      <td>${escapeHtml(a.phone||"—")}</td>
+      <td>${chips}</td>
+      <td>${a.must_change_password?'<span class="badge badge-pending_review">Temp password</span>':'<span class="badge badge-approved">Active</span>'}</td>
+      <td style="text-align:right"><button class="btn btn-sm btn-danger" title="Remove admin" onclick="deleteAdmin('${a.id}')">${TRASH}</button></td>
+    </tr>`;
+  }).join("");
+  tbl.innerHTML=`<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Units</th><th>Status</th><th></th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="6" class="empty">No admins found.</td></tr>'}</tbody></table>`;
+  renderPager("pager", PAGE, SIZE, count||0, "onPage");
+}
+
+function openAdmin(){ document.getElementById("a_name").value=""; document.getElementById("a_email").value=""; document.getElementById("a_phone").value=""; genPw(); document.getElementById("a_status").textContent=""; openModal("adminModal"); }
+
+async function createAdmin(){
+  const full_name=val("a_name").trim(), email=val("a_email").trim().toLowerCase(), phone=val("a_phone").trim(), temp_password=val("a_pw").trim();
+  const s=document.getElementById("a_status");
+  if(!full_name||!email||!temp_password){ s.className="status err"; s.textContent="Name, email and password are required."; return; }
+  const btn=document.getElementById("a_save"); btn.disabled=true; btn.textContent="Creating..."; s.className="status"; s.textContent="";
+  try{
+    const temp=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{storageKey:"ed1-signup-temp",persistSession:false,autoRefreshToken:false}});
+    const { data: signUp, error: signErr }=await temp.auth.signUp({ email, password:temp_password, options:{ data:{ full_name } } });
+    if(signErr){ s.className="status err"; s.textContent=/already registered|already been registered/i.test(signErr.message)?"That email already has an account.":signErr.message; btn.disabled=false; btn.textContent="Create admin"; return; }
+    const newId=signUp&&signUp.user&&signUp.user.id; try{ await temp.auth.signOut(); }catch(e){}
+    if(!newId){ s.className="status err"; s.textContent="Account not created. In Supabase, turn OFF 'Confirm email' and ON sign-ups."; btn.disabled=false; btn.textContent="Create admin"; return; }
+    const { error: profErr }=await sb.from("profiles").insert({ id:newId, full_name, role:"admin", unit_id:null, email, phone:phone||null, temp_password, must_change_password:true });
+    if(profErr){ s.className="status err"; s.textContent="Account made, but profile failed: "+profErr.message; btn.disabled=false; btn.textContent="Create admin"; return; }
+    logActivity("Created admin "+full_name+" ("+email+")");
+    s.className="status ok"; s.textContent="Admin created. Temporary password: "+temp_password+". Add them to units next.";
+    btn.disabled=false; btn.textContent="Create admin"; loadAdmins();
+  }catch(e){ s.className="status err"; s.textContent="Error: "+(e.message||e); btn.disabled=false; btn.textContent="Create admin"; }
+}
+
+async function deleteAdmin(id){
+  const name=NAMES[id]||"this admin";
+  if(!confirm("Remove "+name+" from the app?\n\nThis removes their access. To also free the email, delete their user in Supabase (Authentication > Users).")) return;
+  const { error }=await sb.from("profiles").delete().eq("id",id);
+  if(error){ alert("Could not remove: "+error.message); return; }
+  logActivity("Removed admin "+name);
+  loadAdmins();
+}
+</script>
+</body>
+</html>

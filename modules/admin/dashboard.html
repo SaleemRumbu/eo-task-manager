@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — ED1 Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+const IC = {
+  total:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+  clock:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  alert:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.3 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  check:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>',
+};
+let CH={}, ME=null, MY=[], UNAME={}, PERIOD="all";
+
+(async () => {
+  ME = await requireAuth({ role:"admin" });
+  if(!ME) return;
+  const { data: links } = await sb.from("profile_units").select("unit_id, units(name)").eq("profile_id", ME.id);
+  MY=(links||[]).map(l=>l.unit_id); (links||[]).forEach(l=>{ UNAME[l.unit_id]=l.units?l.units.name:"—"; });
+  const label=MY.map(id=>UNAME[id]).filter(Boolean).join(", ");
+  renderShell(ME, { active:"Dashboard", title:"Dashboard", note:label, unitName:label });
+  if(!MY.length){ document.getElementById("content").innerHTML=`<div class="card empty">No unit assigned yet. Contact the ED1 office.</div>`; return; }
+  buildFrame(); load();
+})();
+
+function buildFrame(){
+  const hour=new Date().getHours();
+  const greet=hour<12?"Good morning":hour<17?"Good afternoon":"Good evening";
+  const firstName=(ME.full_name||"").split(" ")[0];
+  document.getElementById("content").innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:21px;font-weight:800;color:var(--ink)">${greet}, ${escapeHtml(firstName)} 👋</div>
+        <div class="muted" style="font-size:13px">${new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"short",year:"numeric"})}</div>
+      </div>
+      <div class="seg" id="periodSeg" style="margin:0">
+        ${[["today","Today"],["week","This week"],["month","This month"],["30d","Last 30 days"],["all","All time"],["custom","Custom…"]]
+          .map(([v,l])=>`<button class="seg-btn${v==="all"?" active":""}" data-v="${v}" onclick="setPeriod(this)">${l}</button>`).join("")}
+      </div>
+    </div>
+    <div id="customRow" style="display:none;margin:-6px 0 14px" class="row-gap">
+      <div class="field"><label>From</label><input type="date" id="p_from" onchange="load()"></div>
+      <div class="field"><label>To</label><input type="date" id="p_to" onchange="load()"></div>
+    </div>
+    <div id="dash"></div>`;
+}
+
+function setPeriod(btn){
+  PERIOD=btn.dataset.v;
+  [...document.querySelectorAll("#periodSeg .seg-btn")].forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+  document.getElementById("customRow").style.display = PERIOD==="custom" ? "flex" : "none";
+  load();
+}
+function periodRange(){
+  const t=new Date(); t.setHours(0,0,0,0);
+  const iso=d=>d.toISOString().slice(0,10);
+  if(PERIOD==="today"){ return { from:iso(t), to:iso(t) }; }
+  if(PERIOD==="week"){ const d=new Date(t); d.setDate(d.getDate()-((d.getDay()+6)%7)); return { from:iso(d), to:iso(t) }; }
+  if(PERIOD==="month"){ const d=new Date(t.getFullYear(),t.getMonth(),1); return { from:iso(d), to:iso(t) }; }
+  if(PERIOD==="30d"){ const d=new Date(t); d.setDate(d.getDate()-29); return { from:iso(d), to:iso(t) }; }
+  if(PERIOD==="custom"){ return { from:document.getElementById("p_from").value||null, to:document.getElementById("p_to").value||null }; }
+  return { from:null, to:null };
+}
+
+async function load(){
+  const dash=document.getElementById("dash"); dash.innerHTML=`<div class="empty">Loading…</div>`;
+  const { from, to } = periodRange();
+  let q=sb.from("tasks").select("id, title, unit_id, status, due_date, created_at").in("unit_id",MY).is("archived_at",null);
+  if(from) q=q.gte("created_at",from);
+  if(to)   q=q.lte("created_at", to + "T23:59:59");
+  const [{ data: tasks }, { data: notes }] = await Promise.all([
+    q,
+    sb.from("notifications").select("*").eq("user_id",ME.id).order("created_at",{ascending:false}).limit(5),
+  ]);
+  const all=tasks||[];
+  const overdue=t=>t.due_date && t.status!=="approved" && t.due_date<todayStr();
+  const cnt=s=>all.filter(t=>t.status===s).length;
+  const kpi={ total:all.length, inprog:cnt("in_progress"), pending:cnt("pending_review"), approved:cnt("approved"), rejected:cnt("rejected"), due:all.filter(overdue).length };
+  const rangeLabel = (from||to) ? `${from?fmtDate(from):"start"} → ${to?fmtDate(to):"today"}` : "All time";
+
+  const card=(href,cls,ic,num,label)=>`<a class="kpi ${cls}" href="${href}"><div class="kpi-ico">${IC[ic]}</div><div class="kpi-num">${num}</div><div class="kpi-label">${label}</div></a>`;
+  const upcoming=all.filter(t=>t.status!=="approved"&&t.due_date).sort((a,b)=>a.due_date<b.due_date?-1:1).slice(0,6);
+  const upHtml=upcoming.length?upcoming.map(t=>{const di=daysInfo(t.due_date,t.status);return `<div class="feed-item"><div class="feed-body"><div class="feed-text">${escapeHtml(t.title)}</div><div class="feed-meta">${escapeHtml(UNAME[t.unit_id]||"—")} • <span class="due ${di.cls}">${di.text}</span></div></div><span class="${statusClass(t.status)}">${statusLabel(t.status)}</span></div>`;}).join(""):`<div class="muted">Nothing due — you're on top of things.</div>`;
+  const notesHtml=(notes||[]).length?(notes||[]).map(n=>`<div class="feed-item"><div class="feed-dot" style="${n.is_read?"":"background:var(--accent);color:#fff"}">${({reminder:"⏰",approved:"✓",rejected:"✕"})[n.type]||"•"}</div><div class="feed-body"><div class="feed-text" style="font-weight:${n.is_read?"500":"700"}">${escapeHtml(n.title)}</div><div class="feed-meta">${timeAgo(n.created_at)}</div></div></div>`).join(""):`<div class="muted">No notifications.</div>`;
+
+  dash.innerHTML=`
+    <div class="muted" style="font-size:12.5px;margin:-8px 0 10px">Showing: <strong>${escapeHtml(rangeLabel)}</strong></div>
+    ${kpi.due>0?`<a href="my-tasks.html?view=overdue" class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:16px;border-color:var(--red);color:inherit"><span style="font-size:20px">⚠️</span><div><strong style="color:var(--red)">${kpi.due} task${kpi.due===1?" is":"s are"} overdue.</strong> <span class="muted">Click to see them.</span></div></a>`:""}
+    <div class="grid grid-5">
+      ${card("my-tasks.html","k-navy","total",kpi.total,"My tasks")}
+      ${card("my-tasks.html?status=in_progress","k-navy","clock",kpi.inprog,"In progress")}
+      ${card("my-tasks.html?status=pending_review","k-amber","clock",kpi.pending,"Pending review")}
+      ${card("my-tasks.html?view=overdue","k-red","alert",kpi.due,"Overdue")}
+      ${card("my-tasks.html?status=approved","k-green","check",kpi.approved,"Approved")}
+    </div>
+    <div class="grid grid-3" style="margin-top:16px">
+      <div class="card"><div class="section-head"><h2>Status split</h2></div><div class="chart-box sm"><canvas id="c_status"></canvas></div></div>
+      <div class="card"><div class="section-head"><h2>Next deadlines</h2><a class="btn btn-sm" href="my-tasks.html">All tasks</a></div><div class="feed">${upHtml}</div></div>
+      <div class="card"><div class="section-head"><h2>Notifications</h2><a class="btn btn-sm" href="notifications.html">View all</a></div><div class="feed">${notesHtml}</div></div>
+    </div>
+    ${MY.length>1?`<div class="card" style="margin-top:16px"><div class="section-head"><h2>By unit</h2></div>
+      <div class="table-wrap" style="box-shadow:none"><table><colgroup><col style="width:40%"><col><col><col><col></colgroup><thead><tr><th>Unit</th><th>Total</th><th>Pending</th><th>Overdue</th><th>Approved</th></tr></thead>
+      <tbody>${MY.map(uid=>{const list=all.filter(t=>t.unit_id===uid);return `<tr><td><strong>${escapeHtml(UNAME[uid])}</strong></td><td>${list.length}</td><td>${list.filter(t=>t.status==="pending_review").length}</td><td>${list.filter(overdue).length?`<span class="badge badge-rejected badge-flat">${list.filter(overdue).length}</span>`:0}</td><td>${list.filter(t=>t.status==="approved").length}</td></tr>`;}).join("")}</tbody></table></div></div>`:""}`;
+
+  drawChart(kpi);
+  new MutationObserver(()=>drawChart(kpi)).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+}
+
+function drawChart(kpi){
+  Object.values(CH).forEach(c=>{try{c.destroy();}catch(e){}}); CH={};
+  const cs=getComputedStyle(document.body);
+  Chart.defaults.font.family=cs.fontFamily; Chart.defaults.color=cs.getPropertyValue("--muted").trim()||"#667085";
+  CH.status=new Chart(document.getElementById("c_status"),{type:"doughnut",data:{labels:["In progress","Pending review","Approved","Rejected"],datasets:[{data:[kpi.inprog,kpi.pending,kpi.approved,kpi.rejected],backgroundColor:[cs.getPropertyValue("--accent").trim()||"#2E75B6","#d0850f","#15803d","#c0392b"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:"64%",plugins:{legend:{position:"bottom",labels:{boxWidth:9,boxHeight:9,usePointStyle:true,padding:14}}}}});
+}
+</script>
+</body>
+</html>

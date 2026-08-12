@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notifications — ED1 Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+let ME=null;
+const TYPE_ICON={ reminder:"⏰", approved:"✓", rejected:"✕", task:"•" };
+(async () => {
+  ME = await requireAuth({ role:"admin" });
+  if(!ME) return;
+  renderShell(ME, { active:"Notifications", title:"Notifications", note:"" });
+  await load();
+})();
+
+async function load(){
+  const content=document.getElementById("content"); content.innerHTML=`<div class="empty">Loading…</div>`;
+  const { data: notes }=await sb.from("notifications").select("*").eq("user_id",ME.id).order("created_at",{ascending:false});
+  if(!notes||!notes.length){ content.innerHTML=`<div class="card empty">You have no notifications.</div>`; return; }
+  const unread=notes.filter(n=>!n.is_read).length;
+  const items=notes.map(n=>`
+    <div class="feed-item" style="align-items:flex-start">
+      <div class="feed-dot" style="${n.is_read?"":"background:var(--accent);color:#fff"}">${TYPE_ICON[n.type]||"•"}</div>
+      <div class="feed-body">
+        <div class="feed-text" style="font-weight:${n.is_read?"500":"700"}">${escapeHtml(n.title)}</div>
+        <div style="font-size:13px;color:var(--body);margin-top:2px">${escapeHtml(n.body)}</div>
+        <div class="feed-meta">${fmtDateTime(n.created_at)}${n.is_read?"":' • <span style="color:var(--accent);font-weight:600">New</span>'}</div>
+      </div>
+      ${n.is_read?"":`<button class="btn btn-sm btn-ghost" onclick="markRead('${n.id}')">Mark read</button>`}
+    </div>`).join("");
+  content.innerHTML=`
+    <div class="page-head"><h2 style="margin:0;font-size:18px">Your notifications</h2>
+      ${unread?`<button class="btn btn-sm btn-primary" onclick="markAll()">Mark all read (${unread})</button>`:""}</div>
+    <div class="card"><div class="feed">${items}</div></div>`;
+}
+async function markRead(id){ const { error }=await sb.from("notifications").update({is_read:true}).eq("id",id); if(error){alert(error.message);return;} load(); updateNotifBadge(ME.id); }
+async function markAll(){ const { error }=await sb.from("notifications").update({is_read:true}).eq("user_id",ME.id).eq("is_read",false); if(error){alert(error.message);return;} load(); updateNotifBadge(ME.id); }
+</script>
+</body>
+</html>

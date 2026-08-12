@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Tasks — ED1 Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<div class="modal-back" id="detailModal">
+  <div class="modal" style="max-width:560px">
+    <h3 id="d_title">Task</h3>
+    <div id="d_body"><div class="empty">Loading…</div></div>
+    <div id="submitArea" style="display:none">
+      <hr>
+      <label>Summary of work done</label><textarea id="s_summary"></textarea>
+      <label>Attach a file (optional)</label><input id="s_file" type="file">
+    </div>
+    <div class="status" id="d_status"></div>
+    <div class="modal-actions" id="d_actions"></div>
+  </div>
+</div>
+
+<div class="modal-back" id="newTaskModal">
+  <div class="modal">
+    <h3>New task for your unit</h3>
+    <p class="faint" style="font-size:12.5px;margin:0 0 10px">The task is added to your unit and starts as In progress. You can then submit a report on it just like any other task.</p>
+    <label>Title</label>
+    <input id="nt_title" list="ntTitleList" autocomplete="off" placeholder="Start typing…">
+    <datalist id="ntTitleList"></datalist>
+    <label>Description (optional)</label><textarea id="nt_desc"></textarea>
+    <div id="nt_unit_row"><label>Unit</label><select id="nt_unit"></select></div>
+    <label>Due date</label><input id="nt_due" type="date">
+    <label>Priority</label><select id="nt_priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
+    <div class="status" id="nt_status"></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal('newTaskModal')">Cancel</button><button class="btn btn-primary" id="nt_save" onclick="createOwnTask()">Create task</button></div>
+  </div>
+</div>
+
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+let ME=null, MY=[], UNAME={}, CUR=null, PAGE=0, FSTATUS="all", searchTimer=null; const SIZE=20;
+
+(async () => {
+  ME = await requireAuth({ role:"admin" });
+  if(!ME) return;
+  const { data: links } = await sb.from("profile_units").select("unit_id, units(name)").eq("profile_id", ME.id);
+  MY=(links||[]).map(l=>l.unit_id); (links||[]).forEach(l=>{ UNAME[l.unit_id]=l.units?l.units.name:"—"; });
+  const label=MY.map(id=>UNAME[id]).filter(Boolean).join(", ");
+  renderShell(ME, { active:"My Tasks", title:"My Tasks", note:label, unitName:label });
+  if(!MY.length){ document.getElementById("content").innerHTML=`<div class="card empty">No unit assigned yet. Contact the ED1 office.</div>`; return; }
+
+  const scopeOpts=['<option value="all">All my units</option>'].concat(MY.map(id=>`<option value="${id}">${escapeHtml(UNAME[id])}</option>`)).join("");
+  document.getElementById("content").innerHTML=`
+    <div class="page-head"><h2>My tasks</h2><button class="btn btn-primary" onclick="openNewTask()">+ New task</button></div>
+    <div class="toolbar">
+      <div class="seg" id="seg">
+        ${[["all","All"],["in_progress","In progress"],["pending_review","Pending"],["approved","Approved"],["rejected","Rejected"]]
+          .map(([v,l],i)=>`<button class="seg-btn${i===0?" active":""}" data-v="${v}" onclick="pickStatus(this)">${l}</button>`).join("")}
+      </div>
+      <div class="toolbar-row">
+        <div class="field"><label>Unit</label><select id="f_scope" onchange="resetLoad()">${scopeOpts}</select></div>
+        <div class="field"><label>Entered from</label><input type="date" id="f_from" onchange="resetLoad()"></div>
+        <div class="field"><label>Due on/before</label><input type="date" id="f_due" onchange="resetLoad()"></div>
+        <label class="check"><input type="checkbox" id="f_overdue" onchange="resetLoad()"> Overdue only</label>
+        <div class="field grow"><label>Search title</label><input id="f_search" placeholder="Type to search…" oninput="liveSearch()"></div>
+        <button class="btn btn-sm" onclick="resetLoad()">Apply</button>
+        <button class="btn btn-sm btn-ghost" onclick="clearFilters()">Clear</button>
+      </div>
+    </div>
+    <div class="table-wrap" id="tbl"></div>
+    <div class="pager" id="pager"></div>`;
+  const p=new URLSearchParams(location.search);
+  if(p.get("status")){ FSTATUS=p.get("status"); [...document.querySelectorAll("#seg .seg-btn")].forEach(b=>b.classList.toggle("active",b.dataset.v===FSTATUS)); }
+  if(p.get("view")==="overdue") document.getElementById("f_overdue").checked=true;
+  loadTasks();
+})();
+
+function openModal(id){ document.getElementById(id).classList.add("open"); }
+function closeModal(id){ document.getElementById(id).classList.remove("open"); }
+function val(id){ return document.getElementById(id).value; }
+function resetLoad(){ PAGE=0; loadTasks(); }
+function liveSearch(){ clearTimeout(searchTimer); searchTimer=setTimeout(resetLoad, 350); }
+function onPage(p){ PAGE=p; loadTasks(); }
+function pickStatus(btn){ FSTATUS=btn.dataset.v; [...document.querySelectorAll("#seg .seg-btn")].forEach(b=>b.classList.remove("active")); btn.classList.add("active"); resetLoad(); }
+function clearFilters(){ FSTATUS="all"; [...document.querySelectorAll("#seg .seg-btn")].forEach((b,i)=>b.classList.toggle("active",i===0)); document.getElementById("f_scope").value="all"; document.getElementById("f_from").value=""; document.getElementById("f_due").value=""; document.getElementById("f_search").value=""; document.getElementById("f_overdue").checked=false; resetLoad(); }
+
+function buildQuery(){
+  let q=sb.from("tasks").select("*",{count:"exact"}).is("archived_at",null);
+  const scope=val("f_scope"); if(scope==="all") q=q.in("unit_id",MY); else q=q.eq("unit_id",scope);
+  if(FSTATUS!=="all") q=q.eq("status",FSTATUS);
+  const from=val("f_from"); if(from) q=q.gte("created_at",from);
+  const dueBy=val("f_due"); if(dueBy) q=q.lte("due_date",dueBy);
+  if(document.getElementById("f_overdue").checked) q=q.lt("due_date",todayStr()).neq("status","approved");
+  const s=val("f_search").trim(); if(s) q=q.ilike("title","%"+s+"%");
+  return q;
+}
+
+async function loadTasks(){
+  const tbl=document.getElementById("tbl"); tbl.innerHTML=`<div class="empty">Loading…</div>`;
+  const { data, count, error } = await buildQuery().order("due_date",{ascending:true,nullsFirst:false}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
+  if(error){ tbl.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; return; }
+  const rows=(data||[]).map(t=>{
+    const di=daysInfo(t.due_date,t.status);
+    const can=(t.status==="in_progress"||t.status==="rejected");
+    return `<tr>
+      <td><button class="link-title" onclick="openDetail('${t.id}')">${escapeHtml(t.title)}</button></td>
+      <td>${escapeHtml(UNAME[t.unit_id]||"—")}</td>
+      <td><span class="due ${di.cls}">${di.text}</span></td>
+      <td style="text-align:right"><button class="btn btn-sm ${can?"btn-primary":""}" onclick="openDetail('${t.id}')">${can?"Submit":"Open"}</button></td>
+    </tr>`;
+  }).join("");
+  tbl.innerHTML=`<table><colgroup><col style="width:52%"><col style="width:16%"><col style="width:17%"><col style="width:15%"></colgroup><thead><tr><th>Task</th><th>Unit</th><th>Due</th><th style="text-align:right">Action</th></tr></thead>
+    <tbody>${rows||'<tr><td colspan="4" class="empty">No tasks match these filters.</td></tr>'}</tbody></table>`;
+  renderPager("pager", PAGE, SIZE, count||0, "onPage");
+}
+
+async function openDetail(taskId){
+  document.getElementById("d_status").textContent="";
+  document.getElementById("submitArea").style.display="none";
+  document.getElementById("d_body").innerHTML=`<div class="empty">Loading…</div>`;
+  document.getElementById("d_actions").innerHTML=`<button class="btn" onclick="closeModal('detailModal')">Close</button>`;
+  openModal("detailModal");
+  const { data: task }=await sb.from("tasks").select("*").eq("id",taskId).single(); CUR=task;
+  const di=daysInfo(task.due_date,task.status);
+  document.getElementById("d_title").textContent=task.title;
+  document.getElementById("d_body").innerHTML=`
+    <dl class="dl">
+      <dt>Unit</dt><dd>${escapeHtml(UNAME[task.unit_id]||"—")}</dd>
+      <dt>Status</dt><dd><span class="${statusClass(task.status)}">${statusLabel(task.status)}</span></dd>
+      <dt>Priority</dt><dd><span class="badge badge-${task.priority} badge-flat">${task.priority}</span></dd>
+      <dt>Entered</dt><dd>${fmtDate(task.created_at)}</dd>
+      <dt>Due</dt><dd>${task.due_date?fmtDate(task.due_date):"—"} &nbsp; <span class="due ${di.cls}">${di.text}</span></dd>
+      ${task.description?`<dt>Details</dt><dd style="white-space:pre-wrap">${escapeHtml(task.description)}</dd>`:""}
+      ${task.status==="rejected"&&task.rejection_note?`<dt>Rejected</dt><dd style="color:var(--red)">${escapeHtml(task.rejection_note)}</dd>`:""}
+    </dl>`;
+  if(task.status==="in_progress"||task.status==="rejected"){
+    document.getElementById("s_summary").value=""; document.getElementById("s_file").value="";
+    document.getElementById("submitArea").style.display="block";
+    document.getElementById("d_actions").innerHTML=`<button class="btn" onclick="closeModal('detailModal')">Close</button><button class="btn btn-primary" id="s_save" onclick="submitReport()">Submit for review</button>`;
+  }
+}
+
+async function submitReport(){
+  const summary=val("s_summary").trim(); const fileInput=document.getElementById("s_file"); const s=document.getElementById("d_status");
+  if(!summary){ s.className="status err"; s.textContent="A summary is required."; return; }
+  const btn=document.getElementById("s_save"); btn.disabled=true; btn.textContent="Submitting..."; s.className="status"; s.textContent="";
+  try{
+    let file_path=null,file_name=null,file_size=null; const f=fileInput.files[0];
+    if(f){ const path=CUR.unit_id+"/"+CUR.id+"/"+Date.now()+"_"+f.name; const { error:upErr }=await sb.storage.from("submissions").upload(path,f);
+      if(upErr){ s.className="status err"; s.textContent="File upload failed: "+upErr.message; btn.disabled=false; btn.textContent="Submit for review"; return; }
+      file_path=path; file_name=f.name; file_size=f.size; }
+    const { error:subErr }=await sb.from("submissions").insert({task_id:CUR.id,submitted_by:ME.id,summary,file_path,file_name,file_size});
+    if(subErr){ s.className="status err"; s.textContent=subErr.message; btn.disabled=false; btn.textContent="Submit for review"; return; }
+    await sb.from("tasks").update({status:"pending_review",rejection_note:null}).eq("id",CUR.id);
+    logActivity("Submitted a report for '"+CUR.title+"'");
+    s.className="status ok"; s.textContent="Submitted for review.";
+    setTimeout(()=>{ closeModal("detailModal"); loadTasks(); }, 700);
+  }catch(e){ s.className="status err"; s.textContent="Error: "+(e.message||e); btn.disabled=false; btn.textContent="Submit for review"; }
+}
+
+
+async function openNewTask(){
+  const sel=document.getElementById("nt_unit");
+  sel.innerHTML=MY.map(id=>`<option value="${id}">${escapeHtml(UNAME[id])}</option>`).join("");
+  document.getElementById("nt_unit_row").style.display = MY.length>1 ? "block" : "none";
+  document.getElementById("nt_title").value=""; document.getElementById("nt_desc").value=""; document.getElementById("nt_due").value=""; document.getElementById("nt_priority").value="medium";
+  document.getElementById("nt_status").textContent="";
+  // title suggestions from tasks in my units
+  const { data: recent }=await sb.from("tasks").select("title").in("unit_id",MY).order("created_at",{ascending:false}).limit(200);
+  const seen=new Set(); const opts=[];
+  (recent||[]).forEach(r=>{ const tt=(r.title||"").trim(); if(tt && !seen.has(tt.toLowerCase())){ seen.add(tt.toLowerCase()); opts.push(`<option value="${escapeHtml(tt)}">`); } });
+  document.getElementById("ntTitleList").innerHTML=opts.join("");
+  openModal("newTaskModal");
+}
+
+async function createOwnTask(){
+  const title=document.getElementById("nt_title").value.trim();
+  const description=document.getElementById("nt_desc").value.trim();
+  const unit_id=document.getElementById("nt_unit").value;
+  const due_date=document.getElementById("nt_due").value||null;
+  const priority=document.getElementById("nt_priority").value;
+  const s=document.getElementById("nt_status");
+  if(!title){ s.className="status err"; s.textContent="Title is required."; return; }
+  if(!unit_id){ s.className="status err"; s.textContent="Pick a unit."; return; }
+  if(!due_date){ s.className="status err"; s.textContent="A due date is required."; return; }
+  const btn=document.getElementById("nt_save"); btn.disabled=true; btn.textContent="Creating...";
+  const { error }=await sb.from("tasks").insert({
+    title, description:description||null, unit_id, owner_id:null,
+    assigned_by:ME.id, due_date, priority, status:"in_progress"
+  });
+  btn.disabled=false; btn.textContent="Create task";
+  if(error){ s.className="status err"; s.textContent=error.message; return; }
+  logActivity("Created task '"+title+"' for "+(UNAME[unit_id]||"a unit"));
+  closeModal("newTaskModal"); loadTasks();
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Units — ED1 Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Unit detail (click a unit) -->
+<div class="modal-back" id="unitModal">
+  <div class="modal" style="max-width:520px">
+    <h3 id="um_title">Unit</h3>
+    <div id="um_body"></div>
+    <div class="status" id="um_status"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="archiveUnit()">🗄 Archive</button>
+      <button class="btn btn-ghost" onclick="editCurrent()">Edit unit</button>
+      <button class="btn" onclick="closeModal('unitModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Create / edit unit -->
+<div class="modal-back" id="editModal">
+  <div class="modal">
+    <h3 id="e_title">New unit</h3>
+    <label>Unit name</label><input id="e_name">
+    <label>Description (optional)</label><textarea id="e_desc"></textarea>
+    <div class="status" id="e_status"></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal('editModal')">Cancel</button><button class="btn btn-primary" id="e_save" onclick="saveUnit()">Save unit</button></div>
+  </div>
+</div>
+
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+let ME=null, UNITS=[], ARCHIVED=[], ADMINS=[], LINKS={}, ANAME={}, CURUNIT=null, EDIT=null;
+
+(async () => {
+  ME = await requireAuth({ role:"superadmin" });
+  if(!ME) return;
+  renderShell(ME, { active:"Units", title:"Units", note:"Click a unit to manage its admins" });
+  document.getElementById("content").innerHTML=`
+    <div class="page-head"><h2>Units</h2><button class="btn btn-navy" onclick="newUnit()">+ New unit</button></div>
+    <div id="grid"></div>`;
+  await loadData(); renderGrid();
+})();
+
+function openModal(id){ document.getElementById(id).classList.add("open"); }
+function closeModal(id){ document.getElementById(id).classList.remove("open"); }
+function val(id){ return document.getElementById(id).value; }
+function unitById(id){ return UNITS.find(u=>u.id===id); }
+
+async function loadData(){
+  const [{ data: units }, { data: admins }, { data: links }]=await Promise.all([
+    sb.from("units").select("*").is("archived_at",null).order("created_at",{ascending:true}),
+    sb.from("profiles").select("id, full_name, email").eq("role","admin").order("full_name"),
+    sb.from("profile_units").select("profile_id, unit_id"),
+  ]);
+  UNITS=units||[]; ADMINS=admins||[]; ANAME={}; ADMINS.forEach(a=>ANAME[a.id]=a.full_name);
+  const { data: arch }=await sb.from("units").select("*").not("archived_at","is",null).order("archived_at",{ascending:false});
+  ARCHIVED=arch||[];
+  LINKS={}; (links||[]).forEach(l=>{ (LINKS[l.unit_id]=LINKS[l.unit_id]||[]).push(l.profile_id); });
+}
+
+function renderGrid(){
+  const grid=document.getElementById("grid");
+  if(!UNITS.length){ grid.innerHTML=`<div class="card empty">No units yet. Create your first unit.</div>`; return; }
+  grid.className="unit-grid";
+  grid.innerHTML=UNITS.map(u=>{
+    const n=(LINKS[u.id]||[]).length;
+    return `<div class="card unit-card" onclick="openUnit('${u.id}')">
+      <div class="u-name">${escapeHtml(u.name)}</div>
+      <div class="u-meta">${u.description?escapeHtml(u.description):"No description"}</div>
+      <div class="u-foot"><span class="count-pill">${n} admin${n===1?"":"s"}</span><span class="btn btn-sm">Manage →</span></div>
+    </div>`;
+  }).join("");
+  renderArchived();
+}
+
+function renderArchived(){
+  let box=document.getElementById("archBox");
+  if(!box){ box=document.createElement("div"); box.id="archBox"; document.getElementById("content").appendChild(box); }
+  if(!ARCHIVED.length){ box.innerHTML=""; return; }
+  box.innerHTML=`<div class="section-head" style="margin-top:26px"><h2>🗄 Archived units (${ARCHIVED.length})</h2></div>
+    <div class="unit-grid">${ARCHIVED.map(u=>`
+      <div class="card unit-card" style="opacity:.75">
+        <div class="u-name">${escapeHtml(u.name)}</div>
+        <div class="u-meta">Archived ${fmtDate(u.archived_at)}</div>
+        <div class="u-foot"><span class="count-pill">archived</span>
+          <button class="btn btn-sm btn-primary" onclick="restoreUnit('${u.id}','${escapeHtml(u.name)}')">Restore</button></div>
+      </div>`).join("")}</div>`;
+}
+
+async function archiveUnit(){
+  const u=unitById(CURUNIT); if(!u) return;
+  if(!confirm("Archive unit '"+u.name+"'?\n\nIt will be hidden everywhere but nothing is deleted. Its tasks stay in Tasks. You can restore it any time from the Archived section.")) return;
+  const { error }=await sb.from("units").update({archived_at:new Date().toISOString()}).eq("id",CURUNIT);
+  if(error){ alert(error.message); return; }
+  logActivity("Archived unit "+u.name);
+  closeModal("unitModal"); await loadData(); renderGrid();
+}
+async function restoreUnit(id,name){
+  const { error }=await sb.from("units").update({archived_at:null}).eq("id",id);
+  if(error){ alert(error.message); return; }
+  logActivity("Restored unit "+name+" from archive");
+  await loadData(); renderGrid();
+}
+
+// ---- unit detail ----
+function openUnit(id){ CURUNIT=id; document.getElementById("um_status").textContent=""; renderUnitModal(); openModal("unitModal"); }
+function renderUnitModal(){
+  const u=unitById(CURUNIT); if(!u) return;
+  document.getElementById("um_title").textContent=u.name;
+  const memberIds=LINKS[CURUNIT]||[];
+  const members=memberIds.length
+    ? memberIds.map(pid=>`<span class="chip">${escapeHtml(ANAME[pid]||"—")}<span class="x" title="Remove" onclick="removeFromUnit('${pid}')">×</span></span>`).join("")
+    : '<span class="faint">No admins in this unit yet.</span>';
+  const available=ADMINS.filter(a=>!memberIds.includes(a.id));
+  const picker=available.length
+    ? `<div id="um_picker" style="display:none;margin-top:12px" class="row-gap">
+         <select id="um_select" style="flex:1;min-width:180px">${available.map(a=>`<option value="${a.id}">${escapeHtml(a.full_name)} (${escapeHtml(a.email)})</option>`).join("")}</select>
+         <button class="btn btn-sm btn-primary" onclick="addToUnit()">Add</button>
+       </div>
+       <button class="btn btn-sm btn-primary" id="um_addbtn" style="margin-top:12px" onclick="showPicker()">+ Add admin</button>`
+    : `<div class="faint" style="margin-top:12px;font-size:12.5px">All admins are already in this unit (or none exist yet). Create admins on the Admins page.</div>`;
+  document.getElementById("um_body").innerHTML=`
+    ${u.description?`<p class="muted" style="margin-top:-4px">${escapeHtml(u.description)}</p>`:""}
+    <div class="nav-label" style="padding:6px 0 8px">Admins in this unit</div>
+    <div id="um_members">${members}</div>
+    ${picker}`;
+}
+function showPicker(){ document.getElementById("um_picker").style.display="flex"; const b=document.getElementById("um_addbtn"); if(b) b.style.display="none"; }
+
+async function addToUnit(){
+  const sel=document.getElementById("um_select"); if(!sel||!sel.value) return;
+  const name=ANAME[sel.value]||"admin"; const u=unitById(CURUNIT);
+  const { error }=await sb.from("profile_units").insert({ profile_id:sel.value, unit_id:CURUNIT });
+  if(error){ document.getElementById("um_status").className="status err"; document.getElementById("um_status").textContent=error.message; return; }
+  logActivity("Added "+name+" to unit "+u.name);
+  await loadData(); renderUnitModal(); renderGrid();
+}
+async function removeFromUnit(pid){
+  if(!confirm("Remove this admin from the unit?")) return;
+  const name=ANAME[pid]||"an admin"; const u=unitById(CURUNIT);
+  const { error }=await sb.from("profile_units").delete().eq("profile_id",pid).eq("unit_id",CURUNIT);
+  if(error){ alert(error.message); return; }
+  logActivity("Removed "+name+" from unit "+(u?u.name:""));
+  await loadData(); renderUnitModal(); renderGrid();
+}
+
+// ---- create / edit unit ----
+function newUnit(){ EDIT=null; document.getElementById("e_title").textContent="New unit"; document.getElementById("e_name").value=""; document.getElementById("e_desc").value=""; document.getElementById("e_status").textContent=""; openModal("editModal"); }
+function editCurrent(){ const u=unitById(CURUNIT); if(!u) return; EDIT=u.id; document.getElementById("e_title").textContent="Edit unit"; document.getElementById("e_name").value=u.name; document.getElementById("e_desc").value=u.description||""; document.getElementById("e_status").textContent=""; closeModal("unitModal"); openModal("editModal"); }
+async function saveUnit(){
+  const name=val("e_name").trim(), desc=val("e_desc").trim(), s=document.getElementById("e_status");
+  if(!name){ s.className="status err"; s.textContent="Unit name is required."; return; }
+  const btn=document.getElementById("e_save"); btn.disabled=true; btn.textContent="Saving...";
+  let error;
+  if(EDIT){ ({ error }=await sb.from("units").update({name,description:desc||null}).eq("id",EDIT)); }
+  else{ ({ error }=await sb.from("units").insert({name,description:desc||null,created_by:ME.id})); }
+  btn.disabled=false; btn.textContent="Save unit";
+  if(error){ s.className="status err"; s.textContent=error.message; return; }
+  logActivity((EDIT?"Edited":"Created")+" unit "+name);
+  closeModal("editModal"); await loadData(); renderGrid();
+}
+</script>
+</body>
+</html>

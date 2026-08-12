@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Activity — ED1 Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+let ME=null, PAGE=0; const SIZE=25;
+
+(async () => {
+  ME = await requireAuth({ role:"superadmin" });
+  if(!ME) return;
+  renderShell(ME, { active:"Activity", title:"Activity log", note:"Everything that happens in the system" });
+  document.getElementById("content").innerHTML=`
+    <div class="card"><div class="feed" id="feed"><div class="empty">Loading…</div></div></div>
+    <div class="pager" id="pager"></div>`;
+  load();
+})();
+
+function onPage(p){ PAGE=p; load(); }
+
+async function load(){
+  const feed=document.getElementById("feed"); feed.innerHTML=`<div class="empty">Loading…</div>`;
+  const { data, count, error }=await sb.from("activity_log")
+    .select("action, created_at, actor:profiles(full_name)",{count:"exact"})
+    .order("created_at",{ascending:false}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
+  if(error){ feed.innerHTML=`<div class="empty">${escapeHtml(error.message)} — run migration 005.</div>`; return; }
+  if(!data||!data.length){ feed.innerHTML=`<div class="empty">No activity recorded yet.</div>`; renderPager("pager",PAGE,SIZE,0,"onPage"); return; }
+  feed.innerHTML=data.map(a=>{
+    const who=a.actor?a.actor.full_name:"Someone";
+    return `<div class="feed-item">
+      <div class="feed-dot">${escapeHtml(initials(who))}</div>
+      <div class="feed-body"><div class="feed-text">${escapeHtml(a.action)}</div>
+        <div class="feed-meta">${escapeHtml(who)} • ${fmtDateTime(a.created_at)} • ${timeAgo(a.created_at)}</div></div>
+    </div>`;
+  }).join("");
+  renderPager("pager", PAGE, SIZE, count||0, "onPage");
+}
+</script>
+</body>
+</html>
