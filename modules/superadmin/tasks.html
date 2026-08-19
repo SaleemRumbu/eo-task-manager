@@ -128,7 +128,7 @@ function buildQuery(){
 
 async function loadTasks(){
   const tbl=document.getElementById("tbl"); tbl.innerHTML=`<div class="empty">Loading…</div>`;
-  const { data, count, error } = await buildQuery().order("due_date",{ascending:true,nullsFirst:false}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
+  const { data, count, error } = await buildQuery().order("created_at",{ascending:false}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
   if(error){ tbl.innerHTML=`<div class="empty">${escapeHtml(error.message)}${/archived_at/.test(error.message)?" — run migration 006.":""}</div>`; return; }
   const arch = FSTATUS==="archived";
   const rows=(data||[]).map(t=>{
@@ -153,7 +153,7 @@ async function loadTasks(){
 
 // ---- CSV export of the current view ----
 async function exportCsv(){
-  const { data, error } = await buildQuery().order("due_date",{ascending:true,nullsFirst:false}).range(0,999);
+  const { data, error } = await buildQuery().order("created_at",{ascending:false}).range(0,999);
   if(error){ alert(error.message); return; }
   const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
   const lines=[["Title","Scope","Status","Priority","Entered","Due","Description"].map(esc).join(",")];
@@ -183,8 +183,9 @@ async function createTask(){
   if(type==="personal"){ row={title,description:description||null,unit_id:null,owner_id:ME.id,assigned_by:ME.id,due_date,priority,status:"in_progress"}; label="personal task '"+title+"'"; }
   else{ const unit_id=val("t_unit"); if(!unit_id){ s.className="status err"; s.textContent="Create a unit first."; return; } if(!due_date){ s.className="status err"; s.textContent="A due date is required for unit tasks."; return; } row={title,description:description||null,unit_id,owner_id:null,assigned_by:ME.id,due_date,priority,status:"in_progress"}; label="task '"+title+"' for "+(UNITS[unit_id]||"a unit"); }
   const btn=document.getElementById("t_save"); btn.disabled=true; btn.textContent="Creating...";
-  const { error }=await sb.from("tasks").insert(row); btn.disabled=false; btn.textContent="Create task";
+  const { data:created, error }=await sb.from("tasks").insert(row).select("id, unit_id").single(); btn.disabled=false; btn.textContent="Create task";
   if(error){ s.className="status err"; s.textContent=error.message; return; }
+  if(created && created.unit_id){ notifyTaskCreated(created.id); }
   logActivity("Created "+label); closeModal("taskModal"); resetLoad();
 }
 
@@ -250,7 +251,9 @@ async function decide(decision){
   const s=document.getElementById("d_status"); s.className="status"; s.textContent="Saving...";
   const { error }=await sb.from("tasks").update({status:decision,rejection_note:note,reviewed_by:ME.id,reviewed_at:new Date().toISOString()}).eq("id",CUR.id);
   if(error){ s.className="status err"; s.textContent=error.message; return; }
-  await notifyUnitAdmins(CUR.unit_id,{ title:(decision==="approved"?"Task approved: ":"Task rejected: ")+CUR.title, body:decision==="approved"?"Your report was approved.":("Your report was rejected."+(note?" Reason: "+note:"")), type:decision, task_id:CUR.id });
+  // Notify the unit's admins by in-app + email. The task row (incl. any
+  // rejection reason) is already saved, so the server reads it from there.
+  notifyTaskEvent(CUR.id, decision);
   logActivity((decision==="approved"?"Approved":"Rejected")+" task '"+CUR.title+"'");
   s.className="status ok"; s.textContent=decision==="approved"?"Approved.":"Rejected.";
   setTimeout(()=>{ closeModal("detailModal"); loadTasks(); }, 700);
@@ -393,20 +396,32 @@ async function runImport(){
   const s=document.getElementById("imp_status"); const btn=document.getElementById("imp_go");
   btn.disabled=true; btn.textContent="Importing…"; s.className="status"; s.textContent="Inserting "+IMPORT_ROWS.length+" task(s)…";
   // insert in chunks of 200 to keep it snappy
-  let done=0, err=null;
+  let done=0, err=null; const newIds=[];
   for(let i=0;i<IMPORT_ROWS.length;i+=200){
     const chunk=IMPORT_ROWS.slice(i,i+200);
-    const { error }=await sb.from("tasks").insert(chunk);
+    const { data:ins, error }=await sb.from("tasks").insert(chunk).select("id, unit_id");
     if(error){ err=error; break; }
+    (ins||[]).forEach(t=>{ if(t && t.unit_id) newIds.push(t.id); });
     done+=chunk.length;
     s.textContent="Inserting… "+done+" / "+IMPORT_ROWS.length;
   }
   if(err){ s.className="status err"; s.textContent="Import failed after "+done+" rows: "+err.message; btn.disabled=false; btn.textContent="Import valid rows"; return; }
   logActivity("Bulk-imported "+done+" tasks");
+  // one notification email per imported unit task (fire and forget)
+  if(newIds.length){ s.textContent="Imported "+done+" tasks. Sending notifications…"; newIds.forEach(id=>notifyTaskCreated(id)); }
   s.className="status ok"; s.textContent="Imported "+done+" tasks.";
   btn.textContent="Done";
   setTimeout(()=>{ closeModal("importModal"); resetLoad(); }, 900);
 }
+
+// Ask the server to notify the right people by email + in-app for a task event.
+// event: "created" | "rejected" | "approved" | "reminder". Fire-and-forget:
+// a mail problem must never block the action.
+async function notifyTaskEvent(taskId, event){
+  try{ await sb.functions.invoke("notify-task",{ body:{ task_id:taskId, event:event||"created" } }); }
+  catch(e){ console.error("notify-task failed:", e); }
+}
+function notifyTaskCreated(taskId){ return notifyTaskEvent(taskId, "created"); }
 
 </script>
 </body>

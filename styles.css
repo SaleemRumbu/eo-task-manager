@@ -100,7 +100,8 @@ button{cursor:pointer;font-family:inherit;}
 .grid{display:grid;gap:16px;}
 .grid-2{grid-template-columns:repeat(2,1fr);} .grid-3{grid-template-columns:repeat(3,1fr);}
 .grid-4{grid-template-columns:repeat(4,1fr);} .grid-5{grid-template-columns:repeat(5,1fr);}
-@media(max-width:1050px){.grid-5,.grid-4{grid-template-columns:repeat(2,1fr);}.grid-3,.grid-2{grid-template-columns:1fr;}}
+.grid-6{grid-template-columns:repeat(6,1fr);}
+@media(max-width:1050px){.grid-6,.grid-5,.grid-4{grid-template-columns:repeat(2,1fr);}.grid-3,.grid-2{grid-template-columns:1fr;}}
 
 .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow-sm);position:relative;overflow:hidden;display:flex;flex-direction:column;gap:10px;color:inherit;transition:transform .12s,box-shadow .12s,border-color .12s;}
 a.kpi:hover{transform:translateY(-3px);box-shadow:var(--shadow-md);border-color:var(--accent);}

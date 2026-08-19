@@ -20,6 +20,7 @@ const IC = {
   clock:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   alert:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.3 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>',
   check:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>',
+  x:'<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>',
 };
 let CH={}, ME=null, MY=[], UNAME={}, PERIOD="all";
 
@@ -98,12 +99,13 @@ async function load(){
   dash.innerHTML=`
     <div class="muted" style="font-size:12.5px;margin:-8px 0 10px">Showing: <strong>${escapeHtml(rangeLabel)}</strong></div>
     ${kpi.due>0?`<a href="my-tasks.html?view=overdue" class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:16px;border-color:var(--red);color:inherit"><span style="font-size:20px">⚠️</span><div><strong style="color:var(--red)">${kpi.due} task${kpi.due===1?" is":"s are"} overdue.</strong> <span class="muted">Click to see them.</span></div></a>`:""}
-    <div class="grid grid-5">
+    <div class="grid grid-6">
       ${card("my-tasks.html","k-navy","total",kpi.total,"My tasks")}
       ${card("my-tasks.html?status=in_progress","k-navy","clock",kpi.inprog,"In progress")}
       ${card("my-tasks.html?status=pending_review","k-amber","clock",kpi.pending,"Pending review")}
       ${card("my-tasks.html?view=overdue","k-red","alert",kpi.due,"Overdue")}
       ${card("my-tasks.html?status=approved","k-green","check",kpi.approved,"Approved")}
+      ${card("my-tasks.html?status=rejected","k-red","x",kpi.rejected,"Rejected")}
     </div>
     <div class="grid grid-3" style="margin-top:16px">
       <div class="card"><div class="section-head"><h2>Status split</h2></div><div class="chart-box sm"><canvas id="c_status"></canvas></div></div>

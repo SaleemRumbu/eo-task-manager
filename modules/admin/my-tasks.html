@@ -27,14 +27,16 @@
 
 <div class="modal-back" id="newTaskModal">
   <div class="modal">
-    <h3>New task for your unit</h3>
-    <p class="faint" style="font-size:12.5px;margin:0 0 10px">The task is added to your unit and starts as In progress. You can then submit a report on it just like any other task.</p>
+    <h3 id="nt_head">New task</h3>
+    <p class="faint" id="nt_intro" style="font-size:12.5px;margin:0 0 10px">A unit task is shared with your unit. A personal task is only for you.</p>
+    <label>Type</label>
+    <select id="nt_type" onchange="onNtType()"><option value="unit" selected>Unit task (shared with the unit)</option><option value="personal">Personal (only me)</option></select>
     <label>Title</label>
     <input id="nt_title" list="ntTitleList" autocomplete="off" placeholder="Start typing…">
     <datalist id="ntTitleList"></datalist>
     <label>Description (optional)</label><textarea id="nt_desc"></textarea>
     <div id="nt_unit_row"><label>Unit</label><select id="nt_unit"></select></div>
-    <label>Due date</label><input id="nt_due" type="date">
+    <label id="nt_due_lbl">Due date</label><input id="nt_due" type="date">
     <label>Priority</label><select id="nt_priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
     <div class="status" id="nt_status"></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal('newTaskModal')">Cancel</button><button class="btn btn-primary" id="nt_save" onclick="createOwnTask()">Create task</button></div>
@@ -56,7 +58,7 @@ let ME=null, MY=[], UNAME={}, CUR=null, PAGE=0, FSTATUS="all", searchTimer=null;
   renderShell(ME, { active:"My Tasks", title:"My Tasks", note:label, unitName:label });
   if(!MY.length){ document.getElementById("content").innerHTML=`<div class="card empty">No unit assigned yet. Contact the ED1 office.</div>`; return; }
 
-  const scopeOpts=['<option value="all">All my units</option>'].concat(MY.map(id=>`<option value="${id}">${escapeHtml(UNAME[id])}</option>`)).join("");
+  const scopeOpts=['<option value="all">All my tasks</option>','<option value="personal">Personal (only me)</option>'].concat(MY.map(id=>`<option value="${id}">${escapeHtml(UNAME[id])}</option>`)).join("");
   document.getElementById("content").innerHTML=`
     <div class="page-head"><h2>My tasks</h2><button class="btn btn-primary" onclick="openNewTask()">+ New task</button></div>
     <div class="toolbar">
@@ -93,7 +95,10 @@ function clearFilters(){ FSTATUS="all"; [...document.querySelectorAll("#seg .seg
 
 function buildQuery(){
   let q=sb.from("tasks").select("*",{count:"exact"}).is("archived_at",null);
-  const scope=val("f_scope"); if(scope==="all") q=q.in("unit_id",MY); else q=q.eq("unit_id",scope);
+  const scope=val("f_scope");
+  if(scope==="all") q=q.or("owner_id.eq."+ME.id+",unit_id.in.("+MY.join(",")+")");
+  else if(scope==="personal") q=q.is("unit_id",null).eq("owner_id",ME.id);
+  else q=q.eq("unit_id",scope);
   if(FSTATUS!=="all") q=q.eq("status",FSTATUS);
   const from=val("f_from"); if(from) q=q.gte("created_at",from);
   const dueBy=val("f_due"); if(dueBy) q=q.lte("due_date",dueBy);
@@ -104,14 +109,16 @@ function buildQuery(){
 
 async function loadTasks(){
   const tbl=document.getElementById("tbl"); tbl.innerHTML=`<div class="empty">Loading…</div>`;
-  const { data, count, error } = await buildQuery().order("due_date",{ascending:true,nullsFirst:false}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
+  const { data, count, error } = await buildQuery().order("created_at",{ascending:false}).range(PAGE*SIZE, PAGE*SIZE+SIZE-1);
   if(error){ tbl.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; return; }
   const rows=(data||[]).map(t=>{
     const di=daysInfo(t.due_date,t.status);
-    const can=(t.status==="in_progress"||t.status==="rejected");
+    const personal=!t.unit_id;
+    const can=(!personal && (t.status==="in_progress"||t.status==="rejected"));
+    const unitCell=personal?'<span class="badge badge-low badge-flat">Personal</span>':escapeHtml(UNAME[t.unit_id]||"—");
     return `<tr>
       <td><button class="link-title" onclick="openDetail('${t.id}')">${escapeHtml(t.title)}</button></td>
-      <td>${escapeHtml(UNAME[t.unit_id]||"—")}</td>
+      <td>${unitCell}</td>
       <td><span class="due ${di.cls}">${di.text}</span></td>
       <td style="text-align:right"><button class="btn btn-sm ${can?"btn-primary":""}" onclick="openDetail('${t.id}')">${can?"Submit":"Open"}</button></td>
     </tr>`;
@@ -128,11 +135,12 @@ async function openDetail(taskId){
   document.getElementById("d_actions").innerHTML=`<button class="btn" onclick="closeModal('detailModal')">Close</button>`;
   openModal("detailModal");
   const { data: task }=await sb.from("tasks").select("*").eq("id",taskId).single(); CUR=task;
+  const personal=!task.unit_id;
   const di=daysInfo(task.due_date,task.status);
   document.getElementById("d_title").textContent=task.title;
   document.getElementById("d_body").innerHTML=`
     <dl class="dl">
-      <dt>Unit</dt><dd>${escapeHtml(UNAME[task.unit_id]||"—")}</dd>
+      <dt>${personal?"Type":"Unit"}</dt><dd>${personal?'<span class="badge badge-low badge-flat">Personal</span>':escapeHtml(UNAME[task.unit_id]||"—")}</dd>
       <dt>Status</dt><dd><span class="${statusClass(task.status)}">${statusLabel(task.status)}</span></dd>
       <dt>Priority</dt><dd><span class="badge badge-${task.priority} badge-flat">${task.priority}</span></dd>
       <dt>Entered</dt><dd>${fmtDate(task.created_at)}</dd>
@@ -140,11 +148,24 @@ async function openDetail(taskId){
       ${task.description?`<dt>Details</dt><dd style="white-space:pre-wrap">${escapeHtml(task.description)}</dd>`:""}
       ${task.status==="rejected"&&task.rejection_note?`<dt>Rejected</dt><dd style="color:var(--red)">${escapeHtml(task.rejection_note)}</dd>`:""}
     </dl>`;
-  if(task.status==="in_progress"||task.status==="rejected"){
+  if(personal){
+    // Personal tasks have no reviewer: just mark done / reopen.
+    const act = task.status==="approved"
+      ? `<button class="btn" onclick="setPersonalStatus('${task.id}','in_progress')">Reopen</button>`
+      : `<button class="btn btn-success" onclick="setPersonalStatus('${task.id}','approved')">Mark done</button>`;
+    document.getElementById("d_actions").innerHTML=`<button class="btn" onclick="closeModal('detailModal')">Close</button>${act}`;
+  } else if(task.status==="in_progress"||task.status==="rejected"){
     document.getElementById("s_summary").value=""; document.getElementById("s_file").value="";
     document.getElementById("submitArea").style.display="block";
     document.getElementById("d_actions").innerHTML=`<button class="btn" onclick="closeModal('detailModal')">Close</button><button class="btn btn-primary" id="s_save" onclick="submitReport()">Submit for review</button>`;
   }
+}
+
+async function setPersonalStatus(id,status){
+  const { error }=await sb.from("tasks").update({status}).eq("id",id);
+  if(error){ document.getElementById("d_status").className="status err"; document.getElementById("d_status").textContent=error.message; return; }
+  logActivity((status==="approved"?"Completed":"Reopened")+" a personal task");
+  closeModal("detailModal"); loadTasks();
 }
 
 async function submitReport(){
@@ -166,12 +187,22 @@ async function submitReport(){
 }
 
 
+function onNtType(){
+  const personal = document.getElementById("nt_type").value==="personal";
+  document.getElementById("nt_unit_row").style.display = personal ? "none" : (MY.length>1 ? "block" : "none");
+  document.getElementById("nt_due_lbl").textContent = personal ? "Due date (optional)" : "Due date";
+  document.getElementById("nt_intro").textContent = personal
+    ? "A personal task is private to you. It is not shared with the unit and no one is notified."
+    : "A unit task is shared with your unit and everyone assigned is notified.";
+}
+
 async function openNewTask(){
   const sel=document.getElementById("nt_unit");
   sel.innerHTML=MY.map(id=>`<option value="${id}">${escapeHtml(UNAME[id])}</option>`).join("");
-  document.getElementById("nt_unit_row").style.display = MY.length>1 ? "block" : "none";
+  document.getElementById("nt_type").value="unit";
   document.getElementById("nt_title").value=""; document.getElementById("nt_desc").value=""; document.getElementById("nt_due").value=""; document.getElementById("nt_priority").value="medium";
   document.getElementById("nt_status").textContent="";
+  onNtType();
   // title suggestions from tasks in my units
   const { data: recent }=await sb.from("tasks").select("title").in("unit_id",MY).order("created_at",{ascending:false}).limit(200);
   const seen=new Set(); const opts=[];
@@ -181,6 +212,7 @@ async function openNewTask(){
 }
 
 async function createOwnTask(){
+  const personal=document.getElementById("nt_type").value==="personal";
   const title=document.getElementById("nt_title").value.trim();
   const description=document.getElementById("nt_desc").value.trim();
   const unit_id=document.getElementById("nt_unit").value;
@@ -188,17 +220,25 @@ async function createOwnTask(){
   const priority=document.getElementById("nt_priority").value;
   const s=document.getElementById("nt_status");
   if(!title){ s.className="status err"; s.textContent="Title is required."; return; }
-  if(!unit_id){ s.className="status err"; s.textContent="Pick a unit."; return; }
-  if(!due_date){ s.className="status err"; s.textContent="A due date is required."; return; }
+  if(!personal && !unit_id){ s.className="status err"; s.textContent="Pick a unit."; return; }
+  if(!personal && !due_date){ s.className="status err"; s.textContent="A due date is required for a unit task."; return; }
   const btn=document.getElementById("nt_save"); btn.disabled=true; btn.textContent="Creating...";
-  const { error }=await sb.from("tasks").insert({
-    title, description:description||null, unit_id, owner_id:null,
-    assigned_by:ME.id, due_date, priority, status:"in_progress"
-  });
+  const row = personal
+    ? { title, description:description||null, unit_id:null, owner_id:ME.id, assigned_by:ME.id, due_date, priority, status:"in_progress" }
+    : { title, description:description||null, unit_id, owner_id:null, assigned_by:ME.id, due_date, priority, status:"in_progress" };
+  const { data:created, error }=await sb.from("tasks").insert(row).select("id, unit_id").single();
   btn.disabled=false; btn.textContent="Create task";
   if(error){ s.className="status err"; s.textContent=error.message; return; }
-  logActivity("Created task '"+title+"' for "+(UNAME[unit_id]||"a unit"));
+  if(created && created.unit_id){ notifyTaskCreated(created.id); }   // only unit tasks notify anyone
+  logActivity(personal ? "Created a personal task '"+title+"'" : "Created task '"+title+"' for "+(UNAME[unit_id]||"a unit"));
   closeModal("newTaskModal"); loadTasks();
+}
+
+// Ask the server to notify the other unit admins + super admins (minus me) by email + in-app.
+// Fire-and-forget: a mail problem must never block task creation.
+async function notifyTaskCreated(taskId){
+  try{ await sb.functions.invoke("notify-task",{ body:{ task_id:taskId } }); }
+  catch(e){ console.error("notify-task failed:", e); }
 }
 
 </script>
