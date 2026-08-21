@@ -4,7 +4,7 @@
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tasks — ED1 Task Manager</title>
+<title>Tasks — Executive Task Manager</title>
 <link rel="stylesheet" href="../../styles.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -53,6 +53,40 @@
   </div>
 </div>
 
+<style>
+@media print {
+  /* Hide everything except the task table area */
+  .sidebar, .topbar, .menu-btn, .backdrop,
+  .page-head, .toolbar, .pager,
+  .modal-back { display: none !important; }
+
+  /* Remove app shell flex layout so content fills the page */
+  #app { display: block !important; }
+  .main { display: block !important; overflow: visible !important; }
+  .content { padding: 0 !important; max-width: 100% !important; }
+
+  /* Print header injected by printTasks() */
+  #print-header { display: block !important; }
+
+  body { background: #fff !important; color: #000 !important; font-size: 12px; }
+  table { min-width: 100% !important; font-size: 11.5px; }
+  thead th { background: #f0f3f8 !important; color: #333 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tbody tr:hover td { background: transparent !important; }
+  .table-wrap { box-shadow: none !important; border: 1px solid #ccc !important; overflow: visible !important; }
+  a { color: inherit !important; text-decoration: none !important; }
+  .badge, .due { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  /* Action column: hide Open/Review buttons, keep text readable */
+  .c-act { display: none !important; }
+}
+</style>
+<!-- Hidden print header — shown only during print -->
+<div id="print-header" style="display:none;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #1F3864;">
+  <div style="font-size:20px;font-weight:800;color:#1F3864;">Executive Task Manager</div>
+  <div style="font-size:12px;color:#555;margin-top:2px;">Rumbu Industries Group &mdash; All Tasks</div>
+  <div id="print-meta" style="font-size:11px;color:#777;margin-top:6px;"></div>
+</div>
+
 <script>window.ROOT = "../../";</script>
 <script src="../../config.js"></script>
 <script src="../../auth.js"></script>
@@ -75,6 +109,7 @@ let ME=null, UNITS={}, CUR=null, PAGE=0, FSTATUS="all", searchTimer=null; const 
         <button class="btn" onclick="downloadTemplate()" title="Download the CSV template">⤓ Template</button>
         <button class="btn" onclick="openImport()" title="Import many tasks from CSV or Excel">⤒ Import</button>
         <button class="btn" onclick="exportCsv()" title="Download the current view as CSV">⤓ Export CSV</button>
+        <button class="btn" onclick="printTasks()" title="Print the current task list">🖨 Print</button>
         <button class="btn btn-primary" onclick="openTask()">+ New task</button>
       </div></div>
     <div class="toolbar">
@@ -112,6 +147,23 @@ function onPage(p){ PAGE=p; loadTasks(); }
 function liveSearch(){ clearTimeout(searchTimer); searchTimer=setTimeout(resetLoad, 350); }
 function pickStatus(btn){ FSTATUS=btn.dataset.v; [...document.querySelectorAll("#seg .seg-btn")].forEach(b=>b.classList.remove("active")); btn.classList.add("active"); resetLoad(); }
 function clearFilters(){ FSTATUS="all"; [...document.querySelectorAll("#seg .seg-btn")].forEach((b,i)=>b.classList.toggle("active",i===0)); document.getElementById("f_scope").value="all"; document.getElementById("f_from").value=""; document.getElementById("f_due").value=""; document.getElementById("f_search").value=""; document.getElementById("f_overdue").checked=false; resetLoad(); }
+
+function printTasks(){
+  // Build a human-readable summary of active filters for the print header
+  const parts=[];
+  const statusMap={"all":"All","in_progress":"In progress","pending_review":"Pending","approved":"Approved","rejected":"Rejected","archived":"Archived"};
+  parts.push("Status: "+(statusMap[FSTATUS]||FSTATUS));
+  const scope=val("f_scope");
+  if(scope==="personal") parts.push("Scope: Personal");
+  else if(scope!=="all") parts.push("Scope: "+(UNITS[scope]||scope));
+  const from=val("f_from"); if(from) parts.push("Entered from: "+from);
+  const due=val("f_due"); if(due) parts.push("Due by: "+due);
+  if(document.getElementById("f_overdue").checked) parts.push("Overdue only");
+  const search=val("f_search").trim(); if(search) parts.push('Search: "'+search+'"');
+  const now=new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
+  document.getElementById("print-meta").textContent=parts.join(" · ")+" · Printed "+now;
+  window.print();
+}
 
 function buildQuery(){
   let q=sb.from("tasks").select("*",{count:"exact"});

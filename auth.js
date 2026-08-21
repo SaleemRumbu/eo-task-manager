@@ -46,8 +46,8 @@ function renderShell(profile, opts){
   document.getElementById("app").innerHTML = `
     <div class="backdrop" id="backdrop" onclick="toggleSidebar()"></div>
     <aside class="sidebar" id="sidebar">
-      <div class="brand"><div class="brand-mark">ED1</div>
-        <div><div class="brand-title">ED1 Task Manager</div><div class="brand-sub">Rumbu Industries Group</div></div></div>
+      <div class="brand"><div class="brand-mark">EO</div>
+        <div><div class="brand-title">EA Office</div><div class="brand-sub">Executive Director 2</div><div class="brand-sub">Rumbu Industries Group</div></div></div>
       <div class="role-pill ${isSA?"role-sa":"role-admin"}">${isSA?"Super Admin":escapeHtml(opts.unitName||"Unit")+" Admin"}</div>
       <div class="nav-label">${isSA?"Management":"Workspace"}</div>
       <nav class="nav">${links}</nav>
