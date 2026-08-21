@@ -230,6 +230,7 @@ async function openDetail(taskId){
     acts+=`<button class="btn" onclick="remind('${task.id}')">Remind admins</button>`;
     if(task.status==="pending_review"){ acts+=`<button class="btn btn-danger" onclick="decide('rejected')">Reject</button><button class="btn btn-success" onclick="decide('approved')">Approve</button>`; }
   }
+  acts+=`<button class="btn btn-danger" onclick="deleteTask('${task.id}')" style="margin-left:auto">🗑 Delete task</button>`;
   document.getElementById("d_actions").innerHTML=acts;
 }
 
@@ -242,6 +243,15 @@ async function restoreTask(id){
   const { error }=await sb.from("tasks").update({archived_at:null}).eq("id",id);
   if(error){alert(error.message);return;}
   logActivity("Restored a task from archive"); closeModal("detailModal"); loadTasks();
+}
+async function deleteTask(id){
+  if(!confirm("Are you sure you want to delete this task?")) return;
+  const s=document.getElementById("d_status"); s.className="status"; s.textContent="Deleting…";
+  const taskTitle=CUR?CUR.title:"";
+  const { error }=await sb.from("tasks").delete().eq("id",id);
+  if(error){ s.className="status err"; s.textContent=error.message; return; }
+  logActivity("Deleted task '"+taskTitle+"'");
+  closeModal("detailModal"); loadTasks();
 }
 async function setStatus(id,status){ const { error }=await sb.from("tasks").update({status}).eq("id",id); if(error){alert(error.message);return;} logActivity((status==="approved"?"Completed":"Reopened")+" a personal task"); closeModal("detailModal"); loadTasks(); }
 
