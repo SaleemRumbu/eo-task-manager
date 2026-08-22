@@ -24,6 +24,8 @@
     <div id="t_unit_row"><label>Unit</label><select id="t_unit"></select></div>
     <label id="t_due_lbl">Due date</label><input id="t_due" type="date">
     <label>Priority</label><select id="t_priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
+    <label>Tax ID <span class="faint" style="font-weight:normal;font-size:11.5px">(optional)</span></label>
+    <input id="t_tax_id" placeholder="e.g. TAX-2026-0001">
     <div class="status" id="t_status"></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal('taskModal')">Cancel</button><button class="btn btn-primary" id="t_save" onclick="createTask()">Create task</button></div>
   </div>
@@ -207,15 +209,16 @@ async function loadTasks(){
       : (t.status==="pending_review" && !personal ? `<button class="btn btn-sm btn-primary" onclick="openDetail('${t.id}')">Review</button>` : `<button class="btn btn-sm" onclick="openDetail('${t.id}')">Open</button>`);
     return `<tr>
       <td class="c-title"><button class="link-title" onclick="openDetail('${t.id}')">${escapeHtml(t.title)}</button></td>
+      <td class="c-taxid" style="font-family:monospace;font-size:12px;white-space:nowrap">${t.tax_id?`<span class="badge badge-low badge-flat" style="font-family:monospace;letter-spacing:.3px">${escapeHtml(t.tax_id)}</span>`:'<span class="faint">—</span>'}</td>
       <td class="c-unit">${personal?'<span class="badge badge-low badge-flat">Personal</span>':escapeHtml(scopeOf(t))}</td>
       <td class="c-due"><span class="due ${di.cls}">${di.text}</span></td>
       <td class="c-act" style="text-align:right">${action}</td>
     </tr>`;
   }).join("");
   tbl.innerHTML=`<table>
-    <colgroup><col style="width:52%"><col style="width:16%"><col style="width:17%"><col style="width:15%"></colgroup>
-    <thead><tr><th>Title</th><th>Unit</th><th>Due</th><th style="text-align:right">Action</th></tr></thead>
-    <tbody>${rows||`<tr><td colspan="4" class="empty">${arch?"Nothing archived.":"No tasks match these filters."}</td></tr>`}</tbody></table>`;
+    <colgroup><col style="width:40%"><col style="width:15%"><col style="width:14%"><col style="width:16%"><col style="width:15%"></colgroup>
+    <thead><tr><th>Title</th><th>Tax / Ref ID</th><th>Unit</th><th>Due</th><th style="text-align:right">Action</th></tr></thead>
+    <tbody>${rows||`<tr><td colspan="5" class="empty">${arch?"Nothing archived.":"No tasks match these filters."}</td></tr>`}</tbody></table>`;
   renderPager("pager", PAGE, SIZE, count||0, "onPage");
 }
 
@@ -224,8 +227,8 @@ async function exportCsv(){
   const { data, error } = await buildQuery().order("created_at",{ascending:false}).range(0,999);
   if(error){ alert(error.message); return; }
   const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
-  const lines=[["Title","Scope","Status","Priority","Entered","Due","Description"].map(esc).join(",")];
-  (data||[]).forEach(t=>lines.push([t.title,scopeOf(t),statusLabel(t.status),t.priority,fmtDate(t.created_at),t.due_date?fmtDate(t.due_date):"",t.description||""].map(esc).join(",")));
+  const lines=[["Tax ID","Title","Scope","Status","Priority","Entered","Due","Description"].map(esc).join(",")];
+  (data||[]).forEach(t=>lines.push([t.tax_id||"",t.title,scopeOf(t),statusLabel(t.status),t.priority,fmtDate(t.created_at),t.due_date?fmtDate(t.due_date):"",t.description||""].map(esc).join(",")));
   const blob=new Blob([lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="ed1-tasks-"+todayStr()+".csv"; a.click(); URL.revokeObjectURL(a.href);
   logActivity("Exported "+(data||[]).length+" tasks to CSV");
@@ -240,16 +243,16 @@ async function openTask(){
   const seen=new Set(); const opts=[];
   (recent||[]).forEach(r=>{ const tt=(r.title||"").trim(); if(tt && !seen.has(tt.toLowerCase())){ seen.add(tt.toLowerCase()); opts.push(`<option value="${escapeHtml(tt)}">`); } });
   document.getElementById("titleList").innerHTML=opts.join("");
-  document.getElementById("t_type").value="unit"; document.getElementById("t_title").value=""; document.getElementById("t_desc").value=""; document.getElementById("t_due").value=""; document.getElementById("t_status").textContent="";
+  document.getElementById("t_type").value="unit"; document.getElementById("t_title").value=""; document.getElementById("t_desc").value=""; document.getElementById("t_due").value=""; document.getElementById("t_tax_id").value=""; document.getElementById("t_status").textContent="";
   onType(); openModal("taskModal");
 }
 async function createTask(){
-  const type=val("t_type"), title=val("t_title").trim(), description=val("t_desc").trim(), due_date=val("t_due")||null, priority=val("t_priority");
+  const type=val("t_type"), title=val("t_title").trim(), description=val("t_desc").trim(), due_date=val("t_due")||null, priority=val("t_priority"), tax_id=val("t_tax_id").trim()||null;
   const s=document.getElementById("t_status");
   if(!title){ s.className="status err"; s.textContent="Title is required."; return; }
   let row,label;
-  if(type==="personal"){ row={title,description:description||null,unit_id:null,owner_id:ME.id,assigned_by:ME.id,due_date,priority,status:"in_progress"}; label="personal task '"+title+"'"; }
-  else{ const unit_id=val("t_unit"); if(!unit_id){ s.className="status err"; s.textContent="Create a unit first."; return; } if(!due_date){ s.className="status err"; s.textContent="A due date is required for unit tasks."; return; } row={title,description:description||null,unit_id,owner_id:null,assigned_by:ME.id,due_date,priority,status:"in_progress"}; label="task '"+title+"' for "+(UNITS[unit_id]||"a unit"); }
+  if(type==="personal"){ row={title,description:description||null,unit_id:null,owner_id:ME.id,assigned_by:ME.id,due_date,priority,status:"in_progress",tax_id}; label="personal task '"+title+"'"; }
+  else{ const unit_id=val("t_unit"); if(!unit_id){ s.className="status err"; s.textContent="Create a unit first."; return; } if(!due_date){ s.className="status err"; s.textContent="A due date is required for unit tasks."; return; } row={title,description:description||null,unit_id,owner_id:null,assigned_by:ME.id,due_date,priority,status:"in_progress",tax_id}; label="task '"+title+"' for "+(UNITS[unit_id]||"a unit"); }
   const btn=document.getElementById("t_save"); btn.disabled=true; btn.textContent="Creating...";
   const { data:created, error }=await sb.from("tasks").insert(row).select("id, unit_id").single(); btn.disabled=false; btn.textContent="Create task";
   if(error){ s.className="status err"; s.textContent=error.message; return; }
@@ -298,6 +301,7 @@ async function openDetail(taskId){
       <dt>Scope</dt><dd>${personal?"Personal":escapeHtml(scopeOf(task))}</dd>
       <dt>Status</dt><dd><span class="${statusClass(task.status)}">${statusLabel(task.status)}</span></dd>
       <dt>Priority</dt><dd><span class="badge badge-${task.priority} badge-flat">${task.priority}</span></dd>
+      ${task.tax_id?`<dt>Tax ID</dt><dd style="font-family:monospace;font-weight:600">${escapeHtml(task.tax_id)}</dd>`:""}
       <dt>Entered</dt><dd>${fmtDate(task.created_at)}</dd>
       <dt>Due</dt><dd>${task.due_date?fmtDate(task.due_date):"—"} &nbsp; <span class="due ${di.cls}">${di.text}</span></dd>
       ${task.description?`<dt>Details</dt><dd style="white-space:pre-wrap">${escapeHtml(task.description)}</dd>`:""}
