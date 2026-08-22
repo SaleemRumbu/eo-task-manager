@@ -35,7 +35,7 @@
   <div class="modal" style="max-width:640px">
     <h3>Bulk import tasks</h3>
     <p class="muted" style="margin:0 0 12px">Upload a <strong>CSV</strong> or <strong>Excel</strong> file. Need the format? <a href="javascript:downloadTemplate()">Download the template</a>.</p>
-    <p class="faint" style="font-size:12.5px;margin:0 0 12px">Columns: <code>title</code> (required), <code>unit</code> (unit name — leave blank for personal), <code>due_date</code> (YYYY-MM-DD — required for unit tasks), <code>priority</code> (low / medium / high — defaults to medium), <code>description</code> (optional).</p>
+    <p class="faint" style="font-size:12.5px;margin:0 0 12px">Columns: <code>task_id</code> (optional), <code>title</code> (required), <code>unit</code> (unit name — leave blank for personal), <code>due_date</code> (YYYY-MM-DD — required for unit tasks), <code>priority</code> (low / medium / high — defaults to medium), <code>description</code> (optional).</p>
     <input type="file" id="imp_file" accept=".csv,.xlsx,.xls" onchange="parseImport()">
     <div id="imp_preview" style="margin-top:14px"></div>
     <div class="status" id="imp_status"></div>
@@ -415,14 +415,14 @@ async function notifyUnitAdmins(unitId,note){
 let IMPORT_ROWS = [];   // parsed rows waiting to be inserted (valid ones only)
 
 function downloadTemplate(){
-  const header = "title,unit,due_date,priority,description\r\n";
+  const header = "task_id,title,unit,due_date,priority,description\r\n";
   const example = [
-    ["Monthly report","Finance","2026-08-31","medium","Prepare the August P&L"].map(csvCell).join(",")+"\r\n",
-    ["Safety inspection","Oversight","2026-09-05","high","Walk the plant"].map(csvCell).join(",")+"\r\n",
-    ["Personal errand","","","low","No unit = personal task"].map(csvCell).join(",")+"\r\n",
+    ["TASK-2026-001","Monthly report","Finance","2026-08-31","medium","Prepare the August P&L"].map(csvCell).join(",")+"\r\n",
+    ["TASK-2026-002","Safety inspection","Oversight","2026-09-05","high","Walk the plant"].map(csvCell).join(",")+"\r\n",
+    ["","Personal errand","","","low","No unit = personal task, task_id optional"].map(csvCell).join(",")+"\r\n",
   ].join("");
   const blob=new Blob([header+example],{type:"text/csv;charset=utf-8"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="ed1-tasks-template.csv"; a.click(); URL.revokeObjectURL(a.href);
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="eo-tasks-template.csv"; a.click(); URL.revokeObjectURL(a.href);
 }
 function csvCell(v){ return '"'+String(v==null?"":v).replace(/"/g,'""')+'"'; }
 
@@ -485,6 +485,7 @@ async function validateAndPreview(raw){
   const unitByName={}; (units||[]).forEach(u=>unitByName[u.name.toLowerCase().trim()]=u.id);
 
   const results=raw.map((r,i)=>{
+    const task_id=(r.task_id||"").toString().trim();
     const title=(r.title||"").toString().trim();
     const unit=(r.unit||"").toString().trim();
     const due=(r.due_date||"").toString().trim();
@@ -501,13 +502,13 @@ async function validateAndPreview(raw){
     }
     if(due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) errors.push("due_date must be YYYY-MM-DD");
     if(!["low","medium","high"].includes(priority)) errors.push("priority must be low/medium/high");
-    return { row:i+2, title, unit, unit_id, due, priority, description, personal, errors };
+    return { row:i+2, task_id, title, unit, unit_id, due, priority, description, personal, errors };
   });
 
   const valid=results.filter(r=>!r.errors.length);
   const bad=results.filter(r=>r.errors.length);
   IMPORT_ROWS=valid.map(r=>({
-    title:r.title, description:r.description||null,
+    tax_id:r.task_id||null, title:r.title, description:r.description||null,
     unit_id:r.personal?null:r.unit_id, owner_id:r.personal?ME.id:null,
     assigned_by:ME.id, due_date:r.due||null, priority:r.priority, status:"in_progress"
   }));
@@ -515,8 +516,8 @@ async function validateAndPreview(raw){
   document.getElementById("imp_go").disabled = valid.length===0;
 
   const table = `<div class="table-wrap" style="box-shadow:none;max-height:280px;overflow:auto">
-    <table><thead><tr><th>Row</th><th>Title</th><th>Unit</th><th>Due</th><th>Status</th></tr></thead><tbody>
-      ${results.map(r=>`<tr><td class="faint">${r.row}</td><td>${escapeHtml(r.title||"—")}</td><td>${escapeHtml(r.unit||"Personal")}</td><td>${escapeHtml(r.due||"—")}</td>
+    <table><thead><tr><th>Row</th><th>Task ID</th><th>Title</th><th>Unit</th><th>Due</th><th>Status</th></tr></thead><tbody>
+      ${results.map(r=>`<tr><td class="faint">${r.row}</td><td style="font-family:monospace;font-size:12px">${escapeHtml(r.task_id||"—")}</td><td>${escapeHtml(r.title||"—")}</td><td>${escapeHtml(r.unit||"Personal")}</td><td>${escapeHtml(r.due||"—")}</td>
         <td>${r.errors.length?`<span class="badge badge-rejected">${escapeHtml(r.errors.join("; "))}</span>`:`<span class="badge badge-approved">Ready</span>`}</td></tr>`).join("")}
     </tbody></table></div>`;
   document.getElementById("imp_preview").innerHTML=`
