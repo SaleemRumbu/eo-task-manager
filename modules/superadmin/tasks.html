@@ -53,6 +53,22 @@
   </div>
 </div>
 
+<div class="modal-back" id="extendModal">
+  <div class="modal" style="max-width:460px">
+    <h3>Extend Due Date</h3>
+    <p class="muted" style="margin:0 0 14px;font-size:13px">Current due date: <strong id="ext_current">—</strong></p>
+    <label>New due date</label>
+    <input id="ext_date" type="date">
+    <label>Reason for extension</label>
+    <textarea id="ext_reason" placeholder="Briefly explain why the due date is being extended…" rows="3"></textarea>
+    <div class="status" id="ext_status"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('extendModal')">Cancel</button>
+      <button class="btn btn-primary" id="ext_save" onclick="saveExtension()">Save extension</button>
+    </div>
+  </div>
+</div>
+
 <style>
 @media print {
   /* Hide everything except the task table area */
@@ -258,6 +274,23 @@ async function openDetail(taskId){
     if(sub&&sub.file_path){ const { data: signed }=await sb.storage.from("submissions").createSignedUrl(sub.file_path,300); if(signed&&signed.signedUrl) fileHtml=`<p style="margin:10px 0 0"><a class="btn btn-sm" href="${signed.signedUrl}" target="_blank" rel="noopener">⬇ ${escapeHtml(sub.file_name||"Download attachment")}</a></p>`; }
     reportHtml=`<hr><p style="font-weight:700;margin:0 0 8px">Admin's report</p>${sub?`<div class="card" style="box-shadow:none;background:var(--surface-2)"><div style="white-space:pre-wrap">${escapeHtml(sub.summary)}</div>${fileHtml}<p class="faint" style="font-size:12px;margin:10px 0 0">Submitted ${fmtDateTime(sub.submitted_at)}</p></div>`:`<p class="muted">No report submitted yet.</p>`}`;
   }
+  // Load extension history for this task
+  const { data: extensions } = await sb.from("task_due_extensions")
+    .select("*").eq("task_id", taskId).order("extended_at", {ascending: false});
+  let extHtml = "";
+  if(extensions && extensions.length){
+    const rows = extensions.map(e=>`
+      <tr>
+        <td class="faint" style="font-size:12px;white-space:nowrap">${fmtDate(e.extended_at)}</td>
+        <td style="font-size:12px">${escapeHtml(e.old_due_date ? fmtDate(e.old_due_date) : "—")} → <strong>${escapeHtml(fmtDate(e.new_due_date))}</strong></td>
+        <td style="font-size:12px;color:var(--faint)">${escapeHtml(e.reason||"—")}</td>
+      </tr>`).join("");
+    extHtml = `<hr><p style="font-weight:700;margin:0 0 8px">Extension history</p>
+      <div class="table-wrap" style="box-shadow:none;border:1px solid var(--border)">
+        <table><thead><tr><th>Date</th><th>Due date change</th><th>Reason</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+  }
+
   document.getElementById("d_title").textContent=task.title;
   document.getElementById("d_body").innerHTML=`
     ${archived?`<p class="badge badge-low badge-flat" style="margin-top:0">🗄 Archived ${fmtDate(task.archived_at)}</p>`:""}
@@ -269,7 +302,7 @@ async function openDetail(taskId){
       <dt>Due</dt><dd>${task.due_date?fmtDate(task.due_date):"—"} &nbsp; <span class="due ${di.cls}">${di.text}</span></dd>
       ${task.description?`<dt>Details</dt><dd style="white-space:pre-wrap">${escapeHtml(task.description)}</dd>`:""}
       ${task.status==="rejected"&&task.rejection_note?`<dt>Rejected</dt><dd style="color:var(--red)">${escapeHtml(task.rejection_note)}</dd>`:""}
-    </dl>${reportHtml}`;
+    </dl>${reportHtml}${extHtml}`;
 
   let acts=`<button class="btn" onclick="closeModal('detailModal')">Close</button>`;
   if(archived){
@@ -282,8 +315,54 @@ async function openDetail(taskId){
     acts+=`<button class="btn" onclick="remind('${task.id}')">Remind admins</button>`;
     if(task.status==="pending_review"){ acts+=`<button class="btn btn-danger" onclick="decide('rejected')">Reject</button><button class="btn btn-success" onclick="decide('approved')">Approve</button>`; }
   }
+  if(!archived){
+    acts+=`<button class="btn btn-primary" onclick="openExtend()">📅 Extend due date</button>`;
+  }
   acts+=`<button class="btn btn-danger" onclick="deleteTask('${task.id}')" style="margin-left:auto">🗑 Delete task</button>`;
   document.getElementById("d_actions").innerHTML=acts;
+}
+
+function openExtend(){
+  if(!CUR) return;
+  const s=document.getElementById("ext_status"); s.className="status"; s.textContent="";
+  document.getElementById("ext_current").textContent = CUR.due_date ? fmtDate(CUR.due_date) : "No due date set";
+  // Pre-fill with tomorrow relative to current due date, or today+1
+  const base = CUR.due_date ? new Date(CUR.due_date) : new Date();
+  base.setDate(base.getDate()+1);
+  document.getElementById("ext_date").value = base.toISOString().slice(0,10);
+  document.getElementById("ext_reason").value = "";
+  document.getElementById("ext_save").disabled = false;
+  openModal("extendModal");
+}
+
+async function saveExtension(){
+  if(!CUR) return;
+  const newDate = document.getElementById("ext_date").value;
+  const reason = document.getElementById("ext_reason").value.trim();
+  const s = document.getElementById("ext_status");
+  if(!newDate){ s.className="status err"; s.textContent="Please pick a new due date."; return; }
+  if(!reason){ s.className="status err"; s.textContent="Please provide a reason for the extension."; return; }
+  // New date must be after the current due date
+  if(CUR.due_date && newDate <= CUR.due_date){
+    s.className="status err"; s.textContent="New due date must be later than the current due date ("+fmtDate(CUR.due_date)+")."; return;
+  }
+  const btn = document.getElementById("ext_save"); btn.disabled=true; btn.textContent="Saving…";
+  // Log the extension record
+  const { error: logErr } = await sb.from("task_due_extensions").insert({
+    task_id: CUR.id,
+    old_due_date: CUR.due_date || null,
+    new_due_date: newDate,
+    reason: reason,
+    extended_by: ME.id,
+    extended_at: new Date().toISOString()
+  });
+  if(logErr){ s.className="status err"; s.textContent=logErr.message; btn.disabled=false; btn.textContent="Save extension"; return; }
+  // Update the task's due date
+  const { error: updErr } = await sb.from("tasks").update({ due_date: newDate }).eq("id", CUR.id);
+  if(updErr){ s.className="status err"; s.textContent=updErr.message; btn.disabled=false; btn.textContent="Save extension"; return; }
+  logActivity("Extended due date of '"+CUR.title+"' to "+fmtDate(newDate)+" — "+reason);
+  s.className="status ok"; s.textContent="Due date extended.";
+  setTimeout(()=>{ closeModal("extendModal"); openDetail(CUR.id); loadTasks(); }, 700);
 }
 
 async function archiveTask(id){
