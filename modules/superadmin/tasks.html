@@ -144,7 +144,26 @@
 
   /* Action column: hide Open/Review buttons, keep text readable */
   .c-act { display: none !important; }
+  .c-chk { display: none !important; }
+  #bulk-bar { display: none !important; }
 }
+
+/* Bulk action bar */
+#bulk-bar {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--navy, #1F3864);
+  color: #fff;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+#bulk-bar.visible { display: flex; }
+#bulk-bar .btn { font-size: 12px; padding: 5px 12px; }
+.c-chk input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; }
 </style>
 <!-- Hidden print header — shown only during print -->
 <div id="print-header" style="display:none;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #1F3864;">
@@ -192,6 +211,12 @@ let ME=null, UNITS={}, CUR=null, PAGE=0, FSTATUS="all", searchTimer=null; const 
         <button class="btn btn-sm btn-ghost" onclick="clearFilters()">Clear</button>
       </div>
     </div>
+    <div id="bulk-bar">
+      <span id="bulk-count">0 selected</span>
+      <button class="btn" onclick="bulkArchive()">🗄 Archive selected</button>
+      <button class="btn btn-danger" onclick="bulkDelete()">🗑 Delete selected</button>
+      <button class="btn btn-ghost" style="margin-left:auto;color:#fff;border-color:rgba(255,255,255,0.3)" onclick="clearSelection()">✕ Clear</button>
+    </div>
     <div class="table-wrap" id="tbl"></div>
     <div class="pager" id="pager"></div>`;
 
@@ -213,6 +238,44 @@ function onPage(p){ PAGE=p; loadTasks(); }
 function liveSearch(){ clearTimeout(searchTimer); searchTimer=setTimeout(resetLoad, 350); }
 function pickStatus(btn){ FSTATUS=btn.dataset.v; [...document.querySelectorAll("#seg .seg-btn")].forEach(b=>b.classList.remove("active")); btn.classList.add("active"); resetLoad(); }
 function clearFilters(){ FSTATUS="all"; [...document.querySelectorAll("#seg .seg-btn")].forEach((b,i)=>b.classList.toggle("active",i===0)); document.getElementById("f_scope").value="all"; document.getElementById("f_from").value=""; document.getElementById("f_due").value=""; document.getElementById("f_search").value=""; document.getElementById("f_overdue").checked=false; resetLoad(); }
+
+// ── Bulk selection ──────────────────────────────────────────────────
+function getChecked(){ return [...document.querySelectorAll('#tbl input[type=checkbox]:checked')].map(c=>c.value); }
+function onCheckChange(){
+  const ids=getChecked();
+  const bar=document.getElementById("bulk-bar");
+  const allChk=document.getElementById("chk-all");
+  bar.classList.toggle("visible", ids.length>0);
+  document.getElementById("bulk-count").textContent=ids.length+" selected";
+  const total=document.querySelectorAll('#tbl input[type=checkbox]').length;
+  if(allChk) allChk.indeterminate = ids.length>0 && ids.length<total;
+  if(allChk) allChk.checked = ids.length===total && total>0;
+}
+function toggleSelectAll(chk){
+  document.querySelectorAll('#tbl input[type=checkbox]').forEach(c=>c.checked=chk.checked);
+  onCheckChange();
+}
+function clearSelection(){
+  document.querySelectorAll('#tbl input[type=checkbox]').forEach(c=>c.checked=false);
+  const allChk=document.getElementById("chk-all"); if(allChk){ allChk.checked=false; allChk.indeterminate=false; }
+  document.getElementById("bulk-bar").classList.remove("visible");
+}
+async function bulkArchive(){
+  const ids=getChecked(); if(!ids.length) return;
+  if(!confirm("Archive "+ids.length+" selected task(s)?")) return;
+  const { error }=await sb.from("tasks").update({archived_at:new Date().toISOString()}).in("id",ids);
+  if(error){ alert(error.message); return; }
+  logActivity("Bulk archived "+ids.length+" task(s)");
+  clearSelection(); loadTasks();
+}
+async function bulkDelete(){
+  const ids=getChecked(); if(!ids.length) return;
+  if(!confirm("Permanently delete "+ids.length+" selected task(s)? This cannot be undone.")) return;
+  const { error }=await sb.from("tasks").delete().in("id",ids);
+  if(error){ alert(error.message); return; }
+  logActivity("Bulk deleted "+ids.length+" task(s)");
+  clearSelection(); loadTasks();
+}
 
 function printTasks(){
   // Build a human-readable summary of active filters for the print header
@@ -256,6 +319,7 @@ async function loadTasks(){
       ? `<button class="btn btn-sm btn-primary" onclick="restoreTask('${t.id}')">Restore</button>`
       : (t.status==="pending_review" && !personal ? `<button class="btn btn-sm btn-primary" onclick="openDetail('${t.id}')">Review</button>` : `<button class="btn btn-sm" onclick="openDetail('${t.id}')">Open</button>`);
     return `<tr>
+      <td class="c-chk" style="width:36px;text-align:center"><input type="checkbox" value="${t.id}" onchange="onCheckChange()"></td>
       <td class="c-title"><button class="link-title" onclick="openDetail('${t.id}')">${escapeHtml(t.title)}</button></td>
       <td class="c-taxid" style="font-family:monospace;font-size:12px;white-space:nowrap">${t.tax_id?`<span class="badge badge-low badge-flat" style="font-family:monospace;letter-spacing:.3px">${escapeHtml(t.tax_id)}</span>`:'<span class="faint">—</span>'}</td>
       <td class="c-unit">${personal?'<span class="badge badge-low badge-flat">Personal</span>':escapeHtml(scopeOf(t))}</td>
@@ -264,9 +328,12 @@ async function loadTasks(){
     </tr>`;
   }).join("");
   tbl.innerHTML=`<table>
-    <colgroup><col style="width:40%"><col style="width:15%"><col style="width:14%"><col style="width:16%"><col style="width:15%"></colgroup>
-    <thead><tr><th>Title</th><th>Task ID</th><th>Unit</th><th>Due</th><th style="text-align:right">Action</th></tr></thead>
-    <tbody>${rows||`<tr><td colspan="5" class="empty">${arch?"Nothing archived.":"No tasks match these filters."}</td></tr>`}</tbody></table>`;
+    <colgroup><col style="width:36px"><col style="width:37%"><col style="width:14%"><col style="width:13%"><col style="width:15%"><col style="width:14%"></colgroup>
+    <thead><tr>
+      <th class="c-chk" style="text-align:center"><input type="checkbox" id="chk-all" title="Select all" onchange="toggleSelectAll(this)"></th>
+      <th>Title</th><th>Task ID</th><th>Unit</th><th>Due</th><th style="text-align:right">Action</th>
+    </tr></thead>
+    <tbody>${rows||`<tr><td colspan="6" class="empty">${arch?"Nothing archived.":"No tasks match these filters."}</td></tr>`}</tbody></table>`;
   renderPager("pager", PAGE, SIZE, count||0, "onPage");
 }
 
