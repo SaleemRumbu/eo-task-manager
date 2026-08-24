@@ -728,10 +728,13 @@ async function validateAndPreview(raw){
   const { data: units }=await sb.from("units").select("id, name").is("archived_at",null);
   const unitByName={}; (units||[]).forEach(u=>unitByName[u.name.toLowerCase().trim()]=u.id);
 
-  // Fetch all existing task_ids from the system to detect duplicates
-  const { data: existingTasks }=await sb.from("tasks").select("tax_id").not("tax_id","is",null);
+  // Fetch all existing tasks — check by tax_id AND by title+unit_id combination
+  const { data: existingTasks }=await sb.from("tasks").select("tax_id, title, unit_id").is("archived_at",null);
   const existingIds=new Set((existingTasks||[]).map(t=>(t.tax_id||"").toLowerCase().trim()).filter(Boolean));
+  // Build a title+unit key set for tasks that have no tax_id
+  const existingTitleUnit=new Set((existingTasks||[]).map(t=>(t.title||"").toLowerCase().trim()+"|"+(t.unit_id||"personal")));
   const seenInFile=new Set();
+  const seenTitleInFile=new Set();
 
   const results=raw.map((r,i)=>{
     const task_id=(r.task_id||"").toString().trim();
@@ -743,13 +746,6 @@ async function validateAndPreview(raw){
     const errors=[];
     if(!title) errors.push("title missing");
 
-    // Duplicate check
-    if(task_id){
-      if(existingIds.has(task_id.toLowerCase())) errors.push("Task ID '"+task_id+"' already exists in system — skipped");
-      else if(seenInFile.has(task_id.toLowerCase())) errors.push("Task ID '"+task_id+"' duplicated in this file — skipped");
-      else seenInFile.add(task_id.toLowerCase());
-    }
-
     const personal=!unit;
     let unit_id=null;
     if(!personal){
@@ -757,6 +753,28 @@ async function validateAndPreview(raw){
       if(!unit_id) errors.push("unit '"+unit+"' not found");
       if(!due) errors.push("due_date missing");
     }
+
+    // Duplicate check — by Task ID if present, otherwise by title+unit
+    if(task_id){
+      if(existingIds.has(task_id.toLowerCase())){
+        errors.push("Task ID '"+task_id+"' already exists in system — skipped");
+      } else if(seenInFile.has(task_id.toLowerCase())){
+        errors.push("Task ID '"+task_id+"' duplicated in this file — skipped");
+      } else {
+        seenInFile.add(task_id.toLowerCase());
+      }
+    } else if(title){
+      // No Task ID — check by title + unit combination
+      const titleKey=title.toLowerCase()+"|"+(unit_id||"personal");
+      if(existingTitleUnit.has(titleKey)){
+        errors.push("Task '"+title+"' already exists in this unit — skipped");
+      } else if(seenTitleInFile.has(titleKey)){
+        errors.push("Task '"+title+"' duplicated in this file — skipped");
+      } else {
+        seenTitleInFile.add(titleKey);
+      }
+    }
+
     if(due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) errors.push("due_date must be YYYY-MM-DD");
     if(!["low","medium","high"].includes(priority)) errors.push("priority must be low/medium/high");
     return { row:i+2, task_id, title, unit, unit_id, due, priority, description, personal, errors };
