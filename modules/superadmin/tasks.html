@@ -71,6 +71,54 @@
   </div>
 </div>
 
+<!-- Reassign unit modal -->
+<div class="modal-back" id="reassignModal">
+  <div class="modal" style="max-width:440px">
+    <h3>Reassign Task to Another Unit</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 14px">Task: <strong id="rs_title">—</strong></p>
+    <label>Current unit</label>
+    <p id="rs_current" class="faint" style="margin:0 0 12px;font-size:13px">—</p>
+    <label>New unit</label>
+    <select id="rs_unit"></select>
+    <div class="status" id="rs_status"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('reassignModal')">Cancel</button>
+      <button class="btn btn-primary" id="rs_save" onclick="saveReassign()">Reassign</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit task details modal -->
+<div class="modal-back" id="editDetailsModal">
+  <div class="modal" style="max-width:500px">
+    <h3>Edit Task Details</h3>
+    <label>Description</label>
+    <textarea id="ed_desc" rows="5" placeholder="Task details…"></textarea>
+    <div class="status" id="ed_status"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('editDetailsModal')">Cancel</button>
+      <button class="btn btn-primary" id="ed_save" onclick="saveDetails()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rejection modal with text + PDF upload -->
+<div class="modal-back" id="rejectModal">
+  <div class="modal" style="max-width:500px">
+    <h3>Reject Task</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 14px">Provide a reason. The admin will see this along with any attached document.</p>
+    <label>Reason for rejection</label>
+    <textarea id="rj_note" rows="4" placeholder="Explain why the task is being rejected…"></textarea>
+    <label style="margin-top:10px">Supporting document (PDF, optional)</label>
+    <input type="file" id="rj_file" accept=".pdf,.doc,.docx">
+    <div class="status" id="rj_status"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('rejectModal')">Cancel</button>
+      <button class="btn btn-danger" id="rj_save" onclick="submitRejection()">Reject task</button>
+    </div>
+  </div>
+</div>
+
 <style>
 @media print {
   /* Hide everything except the task table area */
@@ -228,10 +276,16 @@ async function exportCsv(){
   if(error){ alert(error.message); return; }
   const esc=v=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
   const lines=[["Task ID","Title","Scope","Status","Priority","Entered","Due","Description"].map(esc).join(",")];
-  (data||[]).forEach(t=>lines.push([t.tax_id||"",t.title,scopeOf(t),statusLabel(t.status),t.priority,fmtDate(t.created_at),t.due_date?fmtDate(t.due_date):"",t.description||""].map(esc).join(",")));
+  const seenIds=new Set();
+  (data||[]).forEach(t=>{
+    const tid=(t.tax_id||"").toLowerCase().trim();
+    if(tid && seenIds.has(tid)) return; // skip duplicate task IDs
+    if(tid) seenIds.add(tid);
+    lines.push([t.tax_id||"",t.title,scopeOf(t),statusLabel(t.status),t.priority,fmtDate(t.created_at),t.due_date?fmtDate(t.due_date):"",t.description||""].map(esc).join(","));
+  });
   const blob=new Blob([lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="ed1-tasks-"+todayStr()+".csv"; a.click(); URL.revokeObjectURL(a.href);
-  logActivity("Exported "+(data||[]).length+" tasks to CSV");
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="eo-tasks-"+todayStr()+".csv"; a.click(); URL.revokeObjectURL(a.href);
+  logActivity("Exported "+(lines.length-1)+" tasks to CSV");
 }
 
 // ---- create ----
@@ -269,15 +323,45 @@ async function openDetail(taskId){
   const { data: task }=await sb.from("tasks").select("*").eq("id",taskId).single(); CUR=task;
   const personal=!task.unit_id, archived=!!task.archived_at;
   const di=daysInfo(task.due_date,task.status);
+
+  // All submissions with their rejection responses
   let reportHtml="";
   if(!personal){
-    const { data: subs }=await sb.from("submissions").select("*").eq("task_id",taskId).order("submitted_at",{ascending:false});
-    const sub=(subs||[])[0]||null;
-    let fileHtml="";
-    if(sub&&sub.file_path){ const { data: signed }=await sb.storage.from("submissions").createSignedUrl(sub.file_path,300); if(signed&&signed.signedUrl) fileHtml=`<p style="margin:10px 0 0"><a class="btn btn-sm" href="${signed.signedUrl}" target="_blank" rel="noopener">⬇ ${escapeHtml(sub.file_name||"Download attachment")}</a></p>`; }
-    reportHtml=`<hr><p style="font-weight:700;margin:0 0 8px">Admin's report</p>${sub?`<div class="card" style="box-shadow:none;background:var(--surface-2)"><div style="white-space:pre-wrap">${escapeHtml(sub.summary)}</div>${fileHtml}<p class="faint" style="font-size:12px;margin:10px 0 0">Submitted ${fmtDateTime(sub.submitted_at)}</p></div>`:`<p class="muted">No report submitted yet.</p>`}`;
+    const { data: subs }=await sb.from("submissions").select("*").eq("task_id",taskId).order("submitted_at",{ascending:true});
+    if(subs && subs.length){
+      const subHtmlArr = await Promise.all((subs||[]).map(async(sub,idx)=>{
+        let fileHtml="";
+        if(sub.file_path){
+          const { data: signed }=await sb.storage.from("submissions").createSignedUrl(sub.file_path,300);
+          if(signed&&signed.signedUrl) fileHtml=`<p style="margin:8px 0 0"><a class="btn btn-sm" href="${signed.signedUrl}" target="_blank" rel="noopener">⬇ ${escapeHtml(sub.file_name||"Download submission")}</a></p>`;
+        }
+        // Rejection response for this submission
+        let rejHtml="";
+        if(sub.rejection_note||sub.rejection_file_path){
+          let rejFileHtml="";
+          if(sub.rejection_file_path){
+            const { data: rs }=await sb.storage.from("submissions").createSignedUrl(sub.rejection_file_path,300);
+            if(rs&&rs.signedUrl) rejFileHtml=`<p style="margin:6px 0 0"><a class="btn btn-sm btn-danger" href="${rs.signedUrl}" target="_blank" rel="noopener">⬇ ${escapeHtml(sub.rejection_file_name||"Rejection document")}</a></p>`;
+          }
+          rejHtml=`<div style="margin-top:10px;padding:8px 10px;background:color-mix(in srgb,var(--red) 8%,transparent);border-left:3px solid var(--red);border-radius:4px">
+            <p style="font-weight:700;color:var(--red);margin:0 0 4px;font-size:12px">❌ Rejected</p>
+            ${sub.rejection_note?`<p style="margin:0;font-size:13px;white-space:pre-wrap">${escapeHtml(sub.rejection_note)}</p>`:""}
+            ${rejFileHtml}
+          </div>`;
+        }
+        return `<div class="card" style="box-shadow:none;background:var(--surface-2);margin-bottom:8px">
+          <p style="font-weight:700;font-size:12px;margin:0 0 4px">Submission ${idx+1} — ${fmtDateTime(sub.submitted_at)}</p>
+          <div style="white-space:pre-wrap;font-size:13px">${escapeHtml(sub.summary)}</div>
+          ${fileHtml}${rejHtml}
+        </div>`;
+      }));
+      reportHtml=`<hr><p style="font-weight:700;margin:0 0 8px">Submission history (${subs.length})</p>${subHtmlArr.join("")}`;
+    } else {
+      reportHtml=`<hr><p style="font-weight:700;margin:0 0 4px">Admin's report</p><p class="muted">No report submitted yet.</p>`;
+    }
   }
-  // Load extension history for this task
+
+  // Extension history
   const { data: extensions } = await sb.from("task_due_extensions")
     .select("*").eq("task_id", taskId).order("extended_at", {ascending: false});
   let extHtml = "";
@@ -305,7 +389,6 @@ async function openDetail(taskId){
       <dt>Entered</dt><dd>${fmtDate(task.created_at)}</dd>
       <dt>Due</dt><dd>${task.due_date?fmtDate(task.due_date):"—"} &nbsp; <span class="due ${di.cls}">${di.text}</span></dd>
       ${task.description?`<dt>Details</dt><dd style="white-space:pre-wrap">${escapeHtml(task.description)}</dd>`:""}
-      ${task.status==="rejected"&&task.rejection_note?`<dt>Rejected</dt><dd style="color:var(--red)">${escapeHtml(task.rejection_note)}</dd>`:""}
     </dl>${reportHtml}${extHtml}`;
 
   let acts=`<button class="btn" onclick="closeModal('detailModal')">Close</button>`;
@@ -317,10 +400,12 @@ async function openDetail(taskId){
   } else {
     acts+=`<button class="btn btn-ghost" onclick="archiveTask('${task.id}')">🗄 Archive</button>`;
     acts+=`<button class="btn" onclick="remind('${task.id}')">Remind admins</button>`;
-    if(task.status==="pending_review"){ acts+=`<button class="btn btn-danger" onclick="decide('rejected')">Reject</button><button class="btn btn-success" onclick="decide('approved')">Approve</button>`; }
+    acts+=`<button class="btn" onclick="openReassign()">↔ Reassign</button>`;
+    if(task.status==="pending_review"){ acts+=`<button class="btn btn-danger" onclick="openRejectModal()">Reject</button><button class="btn btn-success" onclick="decide('approved')">Approve</button>`; }
   }
   if(!archived){
     acts+=`<button class="btn btn-primary" onclick="openExtend()">📅 Extend due date</button>`;
+    acts+=`<button class="btn" onclick="openEditDetails()">✏️ Edit details</button>`;
   }
   document.getElementById("d_actions").innerHTML=acts;
 }
@@ -383,16 +468,108 @@ async function setStatus(id,status){ const { error }=await sb.from("tasks").upda
 
 async function decide(decision){
   if(!CUR) return;
-  let note=null; if(decision==="rejected") note=prompt("Reason for rejection (the admin will see this):")||null;
+  if(decision==="rejected"){ openRejectModal(); return; }
   const s=document.getElementById("d_status"); s.className="status"; s.textContent="Saving...";
-  const { error }=await sb.from("tasks").update({status:decision,rejection_note:note,reviewed_by:ME.id,reviewed_at:new Date().toISOString()}).eq("id",CUR.id);
+  const { error }=await sb.from("tasks").update({status:decision,reviewed_by:ME.id,reviewed_at:new Date().toISOString()}).eq("id",CUR.id);
   if(error){ s.className="status err"; s.textContent=error.message; return; }
-  // Notify the unit's admins by in-app + email. The task row (incl. any
-  // rejection reason) is already saved, so the server reads it from there.
   notifyTaskEvent(CUR.id, decision);
-  logActivity((decision==="approved"?"Approved":"Rejected")+" task '"+CUR.title+"'");
-  s.className="status ok"; s.textContent=decision==="approved"?"Approved.":"Rejected.";
+  logActivity("Approved task '"+CUR.title+"'");
+  s.className="status ok"; s.textContent="Approved.";
   setTimeout(()=>{ closeModal("detailModal"); loadTasks(); }, 700);
+}
+
+// ---- Rejection modal ----
+function openRejectModal(){
+  document.getElementById("rj_note").value="";
+  document.getElementById("rj_file").value="";
+  document.getElementById("rj_status").textContent="";
+  document.getElementById("rj_save").disabled=false;
+  document.getElementById("rj_save").textContent="Reject task";
+  openModal("rejectModal");
+}
+
+async function submitRejection(){
+  if(!CUR) return;
+  const note=document.getElementById("rj_note").value.trim();
+  const fileEl=document.getElementById("rj_file");
+  const file=fileEl.files[0]||null;
+  const s=document.getElementById("rj_status"); const btn=document.getElementById("rj_save");
+  if(!note && !file){ s.className="status err"; s.textContent="Please provide a reason or upload a document."; return; }
+  btn.disabled=true; btn.textContent="Saving…"; s.className="status"; s.textContent="";
+
+  // Upload rejection file if provided
+  let rejection_file_path=null, rejection_file_name=null;
+  if(file){
+    const ext=file.name.split(".").pop();
+    const path=`rejections/${CUR.id}/${Date.now()}.${ext}`;
+    const { error: upErr }=await sb.storage.from("submissions").upload(path, file);
+    if(upErr){ s.className="status err"; s.textContent="File upload failed: "+upErr.message; btn.disabled=false; btn.textContent="Reject task"; return; }
+    rejection_file_path=path; rejection_file_name=file.name;
+  }
+
+  // Store rejection details on the latest submission row
+  const { data: subs }=await sb.from("submissions").select("id").eq("task_id",CUR.id).order("submitted_at",{ascending:false}).limit(1);
+  if(subs && subs.length){
+    await sb.from("submissions").update({ rejection_note:note||null, rejection_file_path, rejection_file_name }).eq("id",subs[0].id);
+  }
+
+  const { error }=await sb.from("tasks").update({status:"rejected",rejection_note:note||null,reviewed_by:ME.id,reviewed_at:new Date().toISOString()}).eq("id",CUR.id);
+  if(error){ s.className="status err"; s.textContent=error.message; btn.disabled=false; btn.textContent="Reject task"; return; }
+  notifyTaskEvent(CUR.id,"rejected");
+  logActivity("Rejected task '"+CUR.title+"'"+(note?" — "+note:""));
+  s.className="status ok"; s.textContent="Rejected.";
+  setTimeout(()=>{ closeModal("rejectModal"); closeModal("detailModal"); loadTasks(); }, 700);
+}
+
+// ---- Reassign unit ----
+async function openReassign(){
+  if(!CUR||!CUR.unit_id) return;
+  document.getElementById("rs_title").textContent=CUR.title;
+  document.getElementById("rs_current").textContent=UNITS[CUR.unit_id]||"—";
+  document.getElementById("rs_status").textContent="";
+  document.getElementById("rs_save").disabled=false;
+  const { data: units }=await sb.from("units").select("id, name").is("archived_at",null).order("name");
+  document.getElementById("rs_unit").innerHTML=(units||[])
+    .filter(u=>u.id!==CUR.unit_id)
+    .map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join("");
+  openModal("reassignModal");
+}
+
+async function saveReassign(){
+  if(!CUR) return;
+  const newUnitId=document.getElementById("rs_unit").value;
+  const s=document.getElementById("rs_status"); const btn=document.getElementById("rs_save");
+  if(!newUnitId){ s.className="status err"; s.textContent="Please select a unit."; return; }
+  btn.disabled=true; btn.textContent="Saving…";
+  const oldUnit=UNITS[CUR.unit_id]||"previous unit";
+  const newUnit=UNITS[newUnitId]||(document.getElementById("rs_unit").selectedOptions[0]||{}).text||"new unit";
+  const { error }=await sb.from("tasks").update({unit_id:newUnitId}).eq("id",CUR.id);
+  if(error){ s.className="status err"; s.textContent=error.message; btn.disabled=false; btn.textContent="Reassign"; return; }
+  logActivity("Reassigned task '"+CUR.title+"' from "+oldUnit+" to "+newUnit);
+  s.className="status ok"; s.textContent="Task reassigned.";
+  setTimeout(()=>{ closeModal("reassignModal"); closeModal("detailModal"); loadTasks(); }, 700);
+}
+
+// ---- Edit task details ----
+function openEditDetails(){
+  if(!CUR) return;
+  document.getElementById("ed_desc").value=CUR.description||"";
+  document.getElementById("ed_status").textContent="";
+  document.getElementById("ed_save").disabled=false;
+  document.getElementById("ed_save").textContent="Save";
+  openModal("editDetailsModal");
+}
+
+async function saveDetails(){
+  if(!CUR) return;
+  const desc=document.getElementById("ed_desc").value.trim();
+  const s=document.getElementById("ed_status"); const btn=document.getElementById("ed_save");
+  btn.disabled=true; btn.textContent="Saving…";
+  const { error }=await sb.from("tasks").update({description:desc||null}).eq("id",CUR.id);
+  if(error){ s.className="status err"; s.textContent=error.message; btn.disabled=false; btn.textContent="Save"; return; }
+  logActivity("Edited details of task '"+CUR.title+"'");
+  s.className="status ok"; s.textContent="Saved.";
+  setTimeout(()=>{ closeModal("editDetailsModal"); openDetail(CUR.id); }, 600);
 }
 async function remind(taskId){
   const { data: task }=await sb.from("tasks").select("*").eq("id",taskId).single();
@@ -484,6 +661,11 @@ async function validateAndPreview(raw){
   const { data: units }=await sb.from("units").select("id, name").is("archived_at",null);
   const unitByName={}; (units||[]).forEach(u=>unitByName[u.name.toLowerCase().trim()]=u.id);
 
+  // Fetch all existing task_ids from the system to detect duplicates
+  const { data: existingTasks }=await sb.from("tasks").select("tax_id").not("tax_id","is",null);
+  const existingIds=new Set((existingTasks||[]).map(t=>(t.tax_id||"").toLowerCase().trim()).filter(Boolean));
+  const seenInFile=new Set();
+
   const results=raw.map((r,i)=>{
     const task_id=(r.task_id||"").toString().trim();
     const title=(r.title||"").toString().trim();
@@ -493,6 +675,14 @@ async function validateAndPreview(raw){
     const description=(r.description||"").toString().trim();
     const errors=[];
     if(!title) errors.push("title missing");
+
+    // Duplicate check
+    if(task_id){
+      if(existingIds.has(task_id.toLowerCase())) errors.push("Task ID '"+task_id+"' already exists in system — skipped");
+      else if(seenInFile.has(task_id.toLowerCase())) errors.push("Task ID '"+task_id+"' duplicated in this file — skipped");
+      else seenInFile.add(task_id.toLowerCase());
+    }
+
     const personal=!unit;
     let unit_id=null;
     if(!personal){
@@ -523,7 +713,7 @@ async function validateAndPreview(raw){
   document.getElementById("imp_preview").innerHTML=`
     <div class="row-gap" style="margin-bottom:10px">
       <span class="count-pill" style="background:color-mix(in srgb,var(--green) 15%,transparent);color:var(--green)">${valid.length} ready</span>
-      ${bad.length?`<span class="count-pill" style="background:color-mix(in srgb,var(--red) 15%,transparent);color:var(--red)">${bad.length} with errors</span>`:""}
+      ${bad.length?`<span class="count-pill" style="background:color-mix(in srgb,var(--red) 15%,transparent);color:var(--red)">${bad.length} skipped (duplicates/errors)</span>`:""}
     </div>${table}`;
   s.className="status"; s.textContent = valid.length?`${valid.length} row(s) ready to import.`:"No valid rows to import — fix the errors above and re-upload.";
 }
