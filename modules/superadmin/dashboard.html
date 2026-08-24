@@ -47,9 +47,12 @@ function buildFrame(){
           .map(([v,l])=>`<button class="seg-btn${v==="all"?" active":""}" data-v="${v}" onclick="setPeriod(this)">${l}</button>`).join("")}
       </div>
     </div>
-    <div id="customRow" style="display:none;margin:-6px 0 14px" class="row-gap">
+    <div id="customRow" style="display:none;margin:-6px 0 6px" class="row-gap">
       <div class="field"><label>From</label><input type="date" id="p_from" onchange="load()"></div>
       <div class="field"><label>To</label><input type="date" id="p_to" onchange="load()"></div>
+    </div>
+    <div class="row-gap" style="margin:0 0 14px">
+      <div class="field"><label>Filter by unit</label><select id="p_unit" onchange="load()"><option value="all">All units</option></select></div>
     </div>
     <div id="dash"></div>`;
 }
@@ -60,6 +63,14 @@ function setPeriod(btn){
   btn.classList.add("active");
   document.getElementById("customRow").style.display = PERIOD==="custom" ? "flex" : "none";
   load();
+}
+
+async function populateUnitFilter(units){
+  const sel=document.getElementById("p_unit");
+  if(!sel) return;
+  const cur=sel.value;
+  sel.innerHTML='<option value="all">All units</option>'+(units||[]).map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join("");
+  if(cur) sel.value=cur;
 }
 
 function periodRange(){
@@ -76,10 +87,14 @@ function periodRange(){
 async function load(){
   const dash=document.getElementById("dash"); dash.innerHTML=`<div class="empty">Loading…</div>`;
   const { from, to } = periodRange();
+  const unitSel=document.getElementById("p_unit");
+  const unitFilter = unitSel ? unitSel.value : "all";
 
   let tq=sb.from("tasks").select("unit_id, status, due_date, created_at").is("archived_at",null);
   if(from) tq=tq.gte("created_at",from);
   if(to)   tq=tq.lte("created_at", to + "T23:59:59");
+  if(unitFilter!=="all") tq=tq.eq("unit_id",unitFilter);
+
   let pq=sb.from("tasks").select("id, title, status, due_date, created_at").is("unit_id",null).is("archived_at",null).eq("owner_id",ME.id);
   if(from) pq=pq.gte("created_at",from);
   if(to)   pq=pq.lte("created_at", to + "T23:59:59");
@@ -90,6 +105,7 @@ async function load(){
     sb.from("activity_log").select("action, created_at, actor:profiles(full_name)").order("created_at",{ascending:false}).limit(8),
     pq.order("due_date",{ascending:true,nullsFirst:false}),
   ]);
+  await populateUnitFilter(units);
   const all=tasks||[];
   const overdue=t=>t.due_date && t.status!=="approved" && t.due_date<todayStr();
   const cnt=s=>all.filter(t=>t.status===s).length;
