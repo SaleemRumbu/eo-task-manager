@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("ed1-theme")||"light"}catch(e){}</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Report Summary — Executive Task Manager</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<style>
+/* ── Print styles ─────────────────────────────────────────────────── */
+@media print {
+  .sidebar, .topbar, .menu-btn, .backdrop,
+  .page-head, .toolbar, .pager, .no-print { display: none !important; }
+  #app { display: block !important; }
+  .main { display: block !important; overflow: visible !important; }
+  .content { padding: 0 !important; max-width: 100% !important; }
+  #print-header { display: block !important; }
+  body { background: #fff !important; color: #000 !important; font-size: 12px; }
+  .report-card {
+    page-break-inside: avoid;
+    border: 1px solid #ccc !important;
+    box-shadow: none !important;
+    margin-bottom: 24px !important;
+    break-inside: avoid;
+  }
+  .report-card-title { color: #1F3864 !important; }
+  .badge, .due { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  a { color: inherit !important; text-decoration: none !important; }
+}
+
+/* ── Report card ──────────────────────────────────────────────────── */
+.report-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-sm);
+}
+.report-card-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--navy);
+  margin: 0 0 10px;
+}
+.report-dl { display: grid; grid-template-columns: 160px 1fr; gap: 5px 10px; font-size: 13px; }
+.report-dl dt { font-weight: 600; color: var(--faint); }
+.report-dl dd { margin: 0; }
+.report-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.report-section-label { font-weight: 700; margin-bottom: 6px; color: var(--ink); }
+.report-sub-card { background: var(--surface-2); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+.report-rejection { background: color-mix(in srgb, var(--red) 8%, transparent); border-left: 3px solid var(--red); border-radius: 4px; padding: 8px 10px; margin-top: 8px; font-size: 13px; }
+</style>
+
+<!-- Hidden print header -->
+<div id="print-header" style="display:none;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #1F3864;">
+  <div style="font-size:20px;font-weight:800;color:#1F3864;">Executive Task Manager — Report Summary</div>
+  <div style="font-size:12px;color:#555;margin-top:2px;">Rumbu Industries Group</div>
+  <div id="print-meta" style="font-size:11px;color:#777;margin-top:6px;"></div>
+</div>
+
+<script>window.ROOT = "../../";</script>
+<script src="../../config.js"></script>
+<script src="../../auth.js"></script>
+<script>
+let ME=null, UNITS={}, PAGE=0, FSTATUS="all", searchTimer=null, ALL_DATA=[];
+const SIZE=20;
+
+(async()=>{
+  ME = await requireAuth({ role:"superadmin" });
+  if(!ME) return;
+  renderShell(ME, { active:"Report Summary", title:"Report Summary", note:"Print individual or all task reports" });
+
+  const { data: units }=await sb.from("units").select("id,name").is("archived_at",null).order("name");
+  UNITS={}; (units||[]).forEach(u=>UNITS[u.id]=u.name);
+  const scopeOpts=['<option value="all">All scopes</option>','<option value="personal">Personal</option>']
+    .concat((units||[]).map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`)).join("");
+
+  document.getElementById("content").innerHTML=`
+    <div class="page-head"><h2>Report Summary</h2>
+      <button class="btn btn-primary no-print" onclick="printAll()">🖨 Print all filtered</button>
+    </div>
+    <div class="toolbar">
+      <div class="seg" id="seg">
+        ${[["all","All"],["in_progress","In progress"],["pending_review","Pending"],["approved","Approved"],["rejected","Rejected"]]
+          .map(([v,l],i)=>`<button class="seg-btn${i===0?" active":""}" data-v="${v}" onclick="pickStatus(this)">${l}</button>`).join("")}
+      </div>
+      <div class="toolbar-row">
+        <div class="field"><label>Scope</label><select id="f_scope" onchange="resetLoad()">${scopeOpts}</select></div>
+        <div class="field"><label>Entered from</label><input type="date" id="f_from" onchange="resetLoad()"></div>
+        <div class="field"><label>Due on/before</label><input type="date" id="f_due" onchange="resetLoad()"></div>
+        <div class="field grow"><label>Search title</label><input id="f_search" placeholder="Type to search…" oninput="liveSearch()"></div>
+        <button class="btn btn-sm btn-ghost no-print" onclick="clearFilters()">Clear</button>
+      </div>
+    </div>
+    <div id="reports"></div>
+    <div class="pager no-print" id="pager"></div>`;
+
+  loadReports();
+})();
+
+function val(id){ return document.getElementById(id).value; }
+function resetLoad(){ PAGE=0; loadReports(); }
+function onPage(p){ PAGE=p; loadReports(); }
+function liveSearch(){ clearTimeout(searchTimer); searchTimer=setTimeout(resetLoad,350); }
+function pickStatus(btn){ FSTATUS=btn.dataset.v; [...document.querySelectorAll("#seg .seg-btn")].forEach(b=>b.classList.remove("active")); btn.classList.add("active"); resetLoad(); }
+function clearFilters(){ FSTATUS="all"; [...document.querySelectorAll("#seg .seg-btn")].forEach((b,i)=>b.classList.toggle("active",i===0)); document.getElementById("f_scope").value="all"; document.getElementById("f_from").value=""; document.getElementById("f_due").value=""; document.getElementById("f_search").value=""; resetLoad(); }
+
+function buildQuery(){
+  let q=sb.from("tasks").select("*",{count:"exact"}).is("archived_at",null);
+  if(FSTATUS!=="all") q=q.eq("status",FSTATUS);
+  const scope=val("f_scope");
+  if(scope==="personal") q=q.is("unit_id",null); else if(scope!=="all") q=q.eq("unit_id",scope);
+  const from=val("f_from"); if(from) q=q.gte("created_at",from);
+  const dueBy=val("f_due"); if(dueBy) q=q.lte("due_date",dueBy);
+  const s=val("f_search").trim(); if(s) q=q.ilike("title","%"+s+"%");
+  return q;
+}
+
+async function loadReports(){
+  const wrap=document.getElementById("reports"); wrap.innerHTML=`<div class="empty">Loading…</div>`;
+  const { data, count, error }=await buildQuery().order("created_at",{ascending:false}).range(PAGE*SIZE,PAGE*SIZE+SIZE-1);
+  if(error){ wrap.innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`; return; }
+  ALL_DATA=data||[];
+  if(!ALL_DATA.length){ wrap.innerHTML=`<div class="empty">No tasks match these filters.</div>`; renderPager("pager",PAGE,SIZE,0,"onPage"); return; }
+  const cards=await Promise.all(ALL_DATA.map(t=>buildCard(t)));
+  wrap.innerHTML=cards.join("");
+  renderPager("pager",PAGE,SIZE,count||0,"onPage");
+}
+
+async function buildCard(task){
+  const personal=!task.unit_id;
+  const di=daysInfo(task.due_date,task.status);
+
+  // Reminder sent?
+  const { data: reminders }=await sb.from("notifications").select("created_at").eq("task_id",task.id).eq("type","reminder").order("created_at",{ascending:false}).limit(1);
+  const reminderDate=(reminders&&reminders.length)?fmtDateTime(reminders[0].created_at):null;
+
+  // Extension history
+  const { data: exts }=await sb.from("task_due_extensions").select("*").eq("task_id",task.id).order("extended_at",{ascending:false});
+  const lastExt=(exts&&exts.length)?exts[0]:null;
+
+  // Submissions
+  let subsHtml="";
+  if(!personal){
+    const { data: subs }=await sb.from("submissions").select("*").eq("task_id",task.id).order("submitted_at",{ascending:true});
+    if(subs&&subs.length){
+      const subItems=await Promise.all(subs.map(async(sub,idx)=>{
+        let fileLink="";
+        if(sub.file_path){
+          const { data: signed }=await sb.storage.from("submissions").createSignedUrl(sub.file_path,300);
+          if(signed&&signed.signedUrl) fileLink=`<div style="margin-top:6px"><a class="btn btn-sm" href="${signed.signedUrl}" target="_blank" rel="noopener">⬇ ${escapeHtml(sub.file_name||"Download submission")}</a></div>`;
+        }
+        let rejHtml="";
+        if(sub.rejection_note||sub.rejection_file_path){
+          let rjFile="";
+          if(sub.rejection_file_path){
+            const { data: rs }=await sb.storage.from("submissions").createSignedUrl(sub.rejection_file_path,300);
+            if(rs&&rs.signedUrl) rjFile=`<div style="margin-top:6px"><a class="btn btn-sm btn-danger" href="${rs.signedUrl}" target="_blank" rel="noopener">⬇ ${escapeHtml(sub.rejection_file_name||"Rejection doc")}</a></div>`;
+          }
+          rejHtml=`<div class="report-rejection"><strong style="color:var(--red)">❌ Rejected:</strong> ${escapeHtml(sub.rejection_note||"")}${rjFile}</div>`;
+        }
+        return `<div class="report-sub-card"><strong>Submission ${idx+1}</strong> — ${fmtDateTime(sub.submitted_at)}<div style="margin-top:4px;white-space:pre-wrap">${escapeHtml(sub.summary)}</div>${fileLink}${rejHtml}</div>`;
+      }));
+      subsHtml=`<div class="report-section"><div class="report-section-label">Submission history (${subs.length})</div>${subItems.join("")}</div>`;
+    }
+  }
+
+  return `<div class="report-card" id="card-${task.id}">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+      <h3 class="report-card-title">${escapeHtml(task.title)}</h3>
+      <button class="btn btn-sm no-print" onclick="printSingle('${task.id}')" title="Print this report">🖨 Print</button>
+    </div>
+    <dl class="report-dl">
+      <dt>Task ID</dt><dd style="font-family:monospace">${task.tax_id?escapeHtml(task.tax_id):'<span class="faint">—</span>'}</dd>
+      <dt>Status</dt><dd><span class="${statusClass(task.status)}">${statusLabel(task.status)}</span></dd>
+      <dt>Scope</dt><dd>${personal?'<span class="badge badge-low badge-flat">Personal</span>':escapeHtml(UNITS[task.unit_id]||"—")}</dd>
+      <dt>Due date</dt><dd>${task.due_date?fmtDate(task.due_date):"—"} &nbsp;<span class="due ${di.cls}">${di.text}</span></dd>
+      ${lastExt?`<dt>Extended to</dt><dd>${fmtDate(lastExt.new_due_date)} <span class="faint" style="font-size:12px">— ${escapeHtml(lastExt.reason||"")}</span></dd>`:""}
+      ${reminderDate?`<dt>Reminder sent</dt><dd>${reminderDate}</dd>`:""}
+      ${task.description?`<dt>Details</dt><dd style="white-space:pre-wrap">${escapeHtml(task.description)}</dd>`:""}
+    </dl>
+    ${subsHtml}
+  </div>`;
+}
+
+function printSingle(taskId){
+  // Hide all cards except the one being printed
+  document.querySelectorAll(".report-card").forEach(c=>{
+    c.style.display = c.id==="card-"+taskId ? "" : "none";
+  });
+  const parts=["Single task report"];
+  const now=new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
+  document.getElementById("print-meta").textContent=parts.join(" · ")+" · Printed "+now;
+  window.print();
+  // Restore all cards after print
+  document.querySelectorAll(".report-card").forEach(c=>c.style.display="");
+}
+
+function printAll(){
+  const parts=[];
+  const statusMap={"all":"All","in_progress":"In progress","pending_review":"Pending","approved":"Approved","rejected":"Rejected"};
+  parts.push("Status: "+(statusMap[FSTATUS]||FSTATUS));
+  const scope=val("f_scope");
+  if(scope==="personal") parts.push("Scope: Personal");
+  else if(scope!=="all") parts.push("Scope: "+(UNITS[scope]||scope));
+  const from=val("f_from"); if(from) parts.push("From: "+from);
+  const due=val("f_due"); if(due) parts.push("Due by: "+due);
+  const search=val("f_search").trim(); if(search) parts.push('Search: "'+search+'"');
+  const now=new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
+  document.getElementById("print-meta").textContent=parts.join(" · ")+" · Printed "+now;
+  window.print();
+}
+</script>
+</body>
+</html>
