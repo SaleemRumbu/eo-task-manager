@@ -34,6 +34,7 @@ function renderShell(profile, opts){
   const isSA = profile.role === "superadmin";
   const nav = isSA
     ? [["modules/superadmin/dashboard.html","Dashboard"],["modules/superadmin/tasks.html","Tasks"],
+       ["modules/superadmin/report-summary.html","Report Summary"],
        ["modules/superadmin/units.html","Units"],["modules/superadmin/admins.html","Admins"],["modules/superadmin/activity.html","Activity"]]
     : [["modules/admin/dashboard.html","Dashboard"],["modules/admin/my-tasks.html","My Tasks"],["modules/admin/notifications.html","Notifications"]];
 
